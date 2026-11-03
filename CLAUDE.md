@@ -25,7 +25,7 @@ Never add platform-specific code outside `engine/platform/` (or `#if` blocks in 
 
 CMake + Ninja + vcpkg (manifest) · SDL3 · Vulkan (volk, VMA, vk-bootstrap) · Slang shaders · Dear ImGui (docking) +
 ImGuizmo/ImPlot · Jolt Physics (cross-platform deterministic) · Box2D v3 · Luau · enkiTS · fastgltf · ufbx ·
-meshoptimizer · KTX2/Basis Universal · FreeType/HarfBuzz/msdf-atlas-gen · FidelityFX Parallel Sort · Yoga · miniaudio · ozz-animation ·
+meshoptimizer · KTX2/Basis Universal · FreeType/HarfBuzz/msdf-atlas-gen · FidelityFX Parallel Sort · Yoga · miniaudio + Steam Audio + Opus · ozz-animation ·
 Recast/Detour · ENet / GameNetworkingSockets · rapidyaml · zstd/LZ4 · xxHash · Tracy · spdlog · doctest.
 
 Adding a new third-party dependency requires a permissive license (MIT/BSD/Zlib/Apache-2/PD), all-platform support,
@@ -57,7 +57,7 @@ must follow these rules:
 Any change that touches sim code must pass the **determinism replay tests** on both x64 and ARM64. If you cannot
 run them locally on both architectures, say so explicitly in the PR/summary.
 
-## Multiplayer & headless (DESIGN.md §13, §14.1)
+## Multiplayer & headless (DESIGN.md §14, §15.1)
 
 - Multiplayer is **built in**: predict/rollback over **server-confirmed inputs**, served by the headless `dg-server`
   (Photon Quantum 3-style architecture, our own implementation). Server modes: `relay` (input authority plus a checksum
@@ -74,7 +74,7 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 - Changes to `InputCommand` schemas, the hash composition, or the snapshot format change the network protocol.
   Bump the protocol version and mention it in the commit message.
 
-## Particles / VFX (DESIGN.md §8.6, §12.2)
+## Particles / VFX (DESIGN.md §8.6, §13.2)
 
 - `dg::vfx` is **presentation-only**. It never reads input or writes sim state, it is excluded from state hashes and
   headless builds, and it seeds RNG from `hash(sim entity, spawn tick, event id)`.
@@ -86,6 +86,19 @@ run them locally on both architectures, say so explicitly in the PR/summary.
   as unsupported).
 - No shader compiler in the player: runtime-authored effects use precompiled module kernels or the CPU path.
 - Effects spawned from predicted sim events must be cancellable on rollback.
+
+## Audio (DESIGN.md §9, §13.3)
+
+- `dg::audio` is **presentation-only**, like VFX. It is never in state hashes, it uses the Null device in headless
+  builds, and gameplay never waits on audio (use sim timers).
+- **Real-time safety:** the audio thread and the device callback never allocate memory, lock, do file IO, or touch the
+  ECS. The game thread talks to audio only through the lock-free command queue.
+- Game code plays **SoundEvents** (`*.dgsound`), never raw clips. Mixing goes through the bus graph. Effects are
+  `IAudioEffect` plugins processed in SIMD blocks.
+- Sounds triggered by predicted sim events pass `source_event`, so that a rollback can fade them out or deduplicate them.
+  Randomization is seeded from `hash(sim entity, tick, event id)`.
+- Occlusion queries use the cooked acoustic proxy BVH or Steam Audio's scene, **never the sim physics world**.
+- FMOD/Wwise are optional plugins behind `IAudioBackend`. Never add them as core dependencies.
 
 ## Architecture rules
 

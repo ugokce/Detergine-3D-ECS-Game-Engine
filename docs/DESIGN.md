@@ -15,7 +15,7 @@ architecture. That property is what makes lockstep and rollback multiplayer "fre
 
 | Pillar | Meaning |
 |---|---|
-| Built-in multiplayer | Predict/rollback netcode, dedicated headless server, state hashing and automatic resync of desynced clients (§13). |
+| Built-in multiplayer | Predict/rollback netcode, dedicated headless server, state hashing and automatic resync of desynced clients (§14). |
 | Deterministic simulation | Fixed-tick ECS simulation, deterministic physics, deterministic Lua. Bit-identical on x64 and ARM64. |
 | Performance | Data-oriented C++23 core, archetype ECS, job system, bindless Vulkan renderer with render graph. |
 | Productivity | Unity-like editor (Hierarchy / Scene / Game / Inspector / Project / Console), prefabs, hot-reloaded Lua. |
@@ -122,8 +122,11 @@ nondeterminism in anything that touches the simulation.
 | FBX | **ufbx** | MIT / PD | Single-file, robust, no Autodesk SDK dependency. |
 | Other formats | **Assimp** (optional importer plugin) | BSD-3 | OBJ, DAE, etc. |
 | Animation | **ozz-animation** | MIT | Skeletal sampling/blending, compression. Sim-side gameplay never depends on sampled poses unless done in deterministic mode. |
-| Audio | **miniaudio** | PD / MIT-0 | All platforms; optional **Steam Audio** plugin for spatialization. |
-| UI layout | **Yoga** (flexbox) | MIT | Runtime UI layout engine (§10). |
+| Audio device / decode | **miniaudio** | PD / MIT-0 | Device IO (WASAPI, CoreAudio, AAudio), WAV/FLAC/MP3 decoding. Mixer, events, and spatializer are ours (§9). |
+| Spatial audio | **Steam Audio** | Apache-2.0 | HRTF binaural, occlusion/transmission, real-time and baked reflections, pathing. Windows/macOS/Android/iOS. |
+| Audio codecs | **libopus** (+ opusfile), **stb_vorbis** | BSD-3 / PD | Opus is the default cooked format; Vorbis for legacy imports. |
+| Audio middleware (optional) | FMOD / Wwise backends | proprietary (user-licensed) | Plugins only, behind `IAudioBackend`. Never a core dependency. |
+| UI layout | **Yoga** (flexbox) | MIT | Runtime UI layout engine (§11). |
 
 ### 2.7 Packaging & distribution
 
@@ -215,7 +218,7 @@ nondeterminism in anything that touches the simulation.
   rhi/                     dg::rhi   – Vulkan abstraction (device, resources, cmd, sync, bindless)
   render/                  dg::render – render graph, render world, passes, materials, GI, 2D
   ui/                      dg::ui    – runtime UI (retained, Yoga layout, MSDF text)
-  audio/                   dg::audio – miniaudio backend
+  audio/                   dg::audio – event runtime, mixer, spatializer, Steam Audio + miniaudio backends
   anim/                    dg::anim  – ozz-animation integration, state machines
   vfx/                     dg::vfx   – particle graph IR, compiler, GPU/CPU runtimes
   scene/                   dg::scene – scenes, prefabs, transforms, hierarchy
@@ -293,7 +296,7 @@ struct DG_REFLECT(Sim) Health {
   ```
 * **Plugin = package** of modules + assets + Lua scripts + a manifest `plugin.dgplugin` (YAML):
   name, version, engine version range, platforms, modules, dependencies, a `deterministic: true|false` flag, and a
-  `headless: true|false` flag (whether the plugin is linked into headless server builds, §14.1).
+  `headless: true|false` flag (whether the plugin is linked into headless server builds, §15.1).
 * Load modes:
   * **Editor / development**: dynamic libraries (`.dll` / `.dylib`) with a C-ABI entry point
     `extern "C" DG_PLUGIN_API dg::PluginInterface* dgCreatePlugin(dg::EngineContext*)`. C++ hot reload is supported for
@@ -543,7 +546,7 @@ probes (the "Lumen-style" path); Phase D — hardware RT path.
 
 A GPU-driven particle system in the class of Niagara and Unity VFX Graph, with a SIMD CPU path for mobile and for
 effects that need CPU-side results. Effects are fully **serialized assets**, authored in the built-in Particle Editor
-(§12.2).
+(§13.2).
 
 **Data model — one IR, two authoring views**
 
@@ -612,7 +615,7 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 * **Visual consistency across clients**: each effect instance is seeded deterministically from
   `hash(sim entity, spawn tick, event id)`, so all players see the "same" effect (best-effort — GPU float results are
   not bit-guaranteed).
-* **Rollback-safe**: effects triggered by *predicted* sim events (§13.8) are spawned as tentative. If the event is
+* **Rollback-safe**: effects triggered by *predicted* sim events (§14.8) are spawned as tentative. If the event is
   cancelled after a rollback, the effect is killed or faded; if confirmed, it continues untouched.
   Gameplay-relevant "particles" (bullets, debris that matters) must be sim entities, not VFX.
 
@@ -621,11 +624,154 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 * `VfxEffect` presentation component (asset GUID, exposed-parameter overrides, autoplay, attach-to-socket).
 * `dg.vfx.play(effect, { position = ..., params = { Color = ... } })` from view Luau and C++.
   Exposed parameters can be bound to reflected component fields.
-* Effects can live on prefabs. Overrides of exposed parameters use the normal prefab override path (§10).
+* Effects can live on prefabs. Overrides of exposed parameters use the normal prefab override path (§11).
+
+## 9. 3D Audio System (`dg::audio`)
+
+A built-in, middleware-class 3D audio engine: event-based sound design, spatialization with HRTF, environmental
+acoustics, and a mixer bus graph. Like VFX, it is **presentation-only** and never affects the sim. Third-party
+middleware (FMOD, Wwise) is supported only as optional plugins behind the same interfaces; it is never required.
+
+### 9.1 Layers
+
+```
+ Game / Luau view scripts ── dg.audio.play(event, …) ──┐
+ ECS presentation components (Listener, Emitter, Zone) ─┤
+                                                        ▼
+ ┌──────────────────────── Audio API (game thread) ─────────────────────────┐
+ │ Event instances · parameters · 3D attributes · snapshots · voice requests │
+ └───────────────────────── lock-free command queue ─────────────────────────┘
+                                                        ▼
+ ┌──────────────────────── Audio engine (audio thread) ──────────────────────┐
+ │ Event runtime (containers, randomization) → Voice manager (virtualization) │
+ │ → Spatializer (panning / HRTF, attenuation, Doppler, occlusion, reverb)    │
+ │ → Mixer bus graph (effects, sends, ducking, snapshots) → Master limiter    │
+ └────────────────────────────────────────────────────────────────────────────┘
+                                                        ▼
+ Device backend: miniaudio (WASAPI · CoreAudio · AAudio/OpenSL ES) │ Null device (headless)
+```
+
+* **Threading**: the game thread only writes commands to a lock-free SPSC queue (play, stop, set parameter, set 3D
+  attributes). The **mixer runs on its own high-priority audio thread**, and the device callback only copies finished
+  buffers. Neither the audio thread nor the callback allocates memory, takes locks, does file IO, or touches the ECS.
+* **Streaming IO** runs on the engine's IO thread into lock-free ring buffers.
+* The **backend is behind `IAudioBackend`**. miniaudio is the default (device IO plus WAV/FLAC/MP3 decoding).
+  FMOD and Wwise backends are user-licensed plugins.
+
+### 9.2 Assets
+
+| Asset | Contents |
+|---|---|
+| **AudioClip** (`.wav/.flac/.ogg/.mp3` source) | Imported, then cooked per platform: **Opus** (default compressed), **Vorbis**, **ADPCM** (low-CPU, mobile SFX), or PCM. Load mode per clip: *decompress on load*, *compressed in memory*, or *streamed*. Loudness analysis (LUFS) at import for normalization. Loop points and markers (cue points) are preserved. |
+| **SoundEvent** (`*.dgsound`, YAML) | The unit game code plays. A tree of **containers**: Single, Random (weighted, no-repeat window), Sequence, Switch (by parameter value), Blend (crossfade by parameter), and Layer (play simultaneously). Per-node volume/pitch randomization, delays, fades, a loop count, and an instance limit with a steal policy (oldest/quietest/farthest). Cooldown. Priority. Output bus. Attenuation preset. **Parameters** (RTPC-like) that map to volume, pitch, filter cutoff, send levels, and blend positions through curves. |
+| **AttenuationPreset** | Distance curve (log / linear / inverse / custom curve), min/max distance, spread vs distance, low-pass vs distance (air absorption), and reverb-send vs distance. Cone (inner/outer angle, outer gain, outer low-pass). |
+| **MixerGraph** (`*.dgmix`) | Bus hierarchy, effects chains, sends, and snapshots (§9.4). |
+| **ReverbPreset / Impulse Response** | Algorithmic reverb parameters or a convolution IR (cooked, partitioned FFT). |
+| **AcousticMaterial** | Absorption (low/mid/high), scattering, and transmission. Assigned to geometry for occlusion and reflections (§9.3). |
+| **MusicTrack / MusicSet** | Interactive music: tempo/meter grid, segments, layered stems, transition rules (on beat/bar/marker, crossfade, stinger). |
+
+All of these are reflected, YAML-serialized assets referenced by GUID. They can be put on prefabs, and their exposed
+parameters use normal prefab overrides.
+
+### 9.3 Spatialization & acoustics
+
+* **Listeners**: one or more `AudioListener` components (split-screen support, with weighted per-listener mixing). The
+  listener usually follows the camera, with an option to use a character position for distance and the camera for
+  orientation.
+* **Positioning**: each emitter has a 3D position, velocity (for **Doppler**, with a per-event scale and clamp),
+  orientation (for cones), and spread. Shape emitters (sphere, box, line, spline) give the closest-point position for
+  rivers, crowds, or wind along walls.
+* **Panning tiers**:
+  * **Speakers**: VBAP-style panning for stereo, 5.1, and 7.1 (configured by the output device).
+  * **Headphones**: **HRTF binaural rendering** via **Steam Audio** (Apache-2.0; Windows, macOS, Android, iOS),
+    with optional custom SOFA HRTFs. It falls back to built-in stereo panning plus ITD/ILD approximation on the low tier
+    or when the voice budget is exceeded.
+* **Occlusion & obstruction**:
+  * Low tier: a few rays per emitter against a dedicated **acoustic proxy BVH**, built at cook time from colliders or
+    marked meshes (it never queries the sim physics world from the audio side). The result drives volume and low-pass.
+  * High tier: Steam Audio's ray-traced occlusion and **transmission** through acoustic materials (thin walls muffle,
+    thick walls block).
+  * Rays are amortized over frames by emitter priority, and results are smoothed to avoid zipper noise.
+* **Reverb & environment**:
+  * **Reverb zones** (`AudioZone` component: box/sphere/convex volume with a blend distance and priority) select a
+    reverb preset and per-bus send levels. Overlapping zones crossfade.
+  * High tier: **Steam Audio real-time or baked reflections** (impulse responses per probe, baked in the editor) and
+    **baked pathing / propagation** so sound bends around corners and through doorways.
+* **Ambience**: ambient beds (2D, stereo/quad) plus 3D one-shot scatter around the listener (random position within a
+  radius, distance/height rules, density driven by parameters such as time of day or weather).
+
+### 9.4 Mixer
+
+* **Bus graph** (default template): `Master → {Music, SFX → {Weapons, Footsteps, Impacts, …}, Voice, Ambience, UI}`.
+  Each bus has volume, pitch, mute/solo, an **effects chain**, and sends to aux buses (reverb, echo).
+* **Built-in effects**: parametric EQ, low/high-pass, compressor, limiter (always on Master), sidechain ducker, delay,
+  algorithmic reverb, convolution reverb, chorus, and distortion. Effects are `IAudioEffect` plugins, processed in
+  SIMD blocks.
+* **Snapshots**: named mixer states (e.g. *Paused*, *Underwater*, *LowHealth*) that blend in and out over time, with
+  priorities. They are triggered from game code or by zones.
+* **Ducking**: sidechain rules (Voice ducks Music and SFX), plus automatic HDR-style "loudest sounds win" priority
+  when many sounds are active.
+* **Player settings**: per-bus user volume sliders, mono downmix, dynamic range presets (TV / headphones / night mode),
+  and subtitles hooked into Voice events.
+
+### 9.5 Voice management & performance
+
+* **Virtual voices**: every playing event instance exists logically. Only the top N by **audibility × priority** get
+  real voices. Virtual voices keep advancing their playback position (or restart on becoming audible, per event
+  setting), so sounds don't "start from the beginning" when you walk back into range.
+* **Real voice budgets per platform tier** (e.g. desktop 128, mobile 32), plus separate HRTF voice and occlusion-ray
+  budgets.
+* **Distance culling** before anything is decoded. Decoding happens only for real voices. Streamed clips use a limited
+  number of streams per tier.
+* **SIMD mixing** (SSE/AVX2 on x64, NEON on ARM64) in fixed-size blocks (e.g. 256 or 512 frames). Sample-rate
+  conversion is done per voice only when needed. 32-bit float mixing internally.
+* **Latency**: configurable device buffer sizes per platform. AAudio low-latency mode on Android when it is available.
+* **Device changes** (headphones plugged in, Bluetooth, default device switch) are handled live, switching the panning
+  tier automatically.
+* **Profiling**: real/virtual voice counts, CPU time per bus and effect, stream buffer health, and occlusion ray counts,
+  shown in Tracy and the editor profiler.
+
+### 9.6 Relationship to the simulation & networking
+
+* Audio is **presentation-only**. It is not in state hashes. Headless builds link a **Null audio device** and the cook
+  strips audio assets (§15.1).
+* **Rollback-safe playback** (§14.8): a sound triggered by a *predicted* sim event **starts immediately**, because
+  latency matters more than correctness for audio. It is tagged with the event's ID. If a rollback **cancels** the event,
+  the sound **fades out quickly** (about 30–80 ms, configurable per event). If the event is **confirmed**, nothing happens.
+  If re-simulation raises the same event again (same ID), it is **deduplicated**, not replayed.
+* **Same variation on every client**: random container choices and pitch/volume randomization are seeded from
+  `hash(sim entity, tick, event id)`, so players hear the same footstep variation (best effort).
+* **Gameplay must never depend on audio** (e.g. "wait until the sound finishes" must be expressed as a sim timer).
+
+### 9.7 Integration & API
+
+* ECS presentation components: `AudioListener`, `AudioEmitter` (event GUID, autoplay, parameters, attenuation override,
+  attach-to-socket), `AudioZone`, `AcousticGeometry` (mesh/collider + material), `MusicPlayer`.
+* Animation events (footsteps, etc.) and VFX events (§8.6) can trigger sound events directly.
+* Luau (view scripts) and C++:
+
+```lua
+--!strict
+-- footsteps.view.luau
+local Footstep = dg.audio.event("SFX/Footstep")
+
+return dg.view_system {
+    on_sim_event = { Landed = function(view, e)
+        dg.audio.play(Footstep, {
+            position = view:position(e.entity),
+            params = { Surface = e.surface, Speed = e.speed },
+            source_event = e,          -- ties playback to the sim event for rollback cancel/dedupe
+        })
+    end },
+}
+```
+
+* Exposed parameters can be **bound to reflected component fields** (e.g. engine RPM → `Rpm` parameter), and they are
+  updated once per frame from the presentation world.
 
 ---
 
-## 9. Asset Pipeline
+## 10. Asset Pipeline
 
 * **Asset database** (editor): every source file in `Assets/` has a sidecar **`.meta`** file (YAML) holding a stable
   **GUID**, importer type and version, and import settings, like Unity. Moving or renaming a file keeps its GUID.
@@ -642,7 +788,7 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 
 ---
 
-## 10. Scene, Prefabs & Runtime Objects
+## 11. Scene, Prefabs & Runtime Objects
 
 * **Scene** = a serialized set of entities (YAML in the editor, binary when cooked). Multiple scenes can be loaded
   additively.
@@ -660,7 +806,7 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 
 ---
 
-## 11. Runtime UI System (`dg::ui`) & UI Designer
+## 12. Runtime UI System (`dg::ui`) & UI Designer
 
 * **Retained-mode, ECS-backed UI**: UI elements are entities with `RectTransform` (Unity-like anchors, pivot, offsets)
   and an optional **Yoga flexbox** layout container (`FlexLayout`), which gives responsive layouts.
@@ -681,7 +827,7 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 
 ---
 
-## 12. Editor (Unity-like)
+## 13. Editor (Unity-like)
 
 Built with Dear ImGui (docking + multi-viewport), plus ImGuizmo, ImPlot, and imgui-node-editor. A custom theme
 closely matches Unity's dark/light skins.
@@ -696,15 +842,16 @@ closely matches Unity's dark/light skins.
 | **Console** | Logs with filters, collapse, and source jump; Lua errors with stack traces. |
 | **Profiler** | Integrated Tracy client view plus engine counters (sim tick ms, rollback count, GPU passes). |
 | **Animation / Animator** | Timeline and state-machine graph editor (imgui-node-editor). |
-| **UI Designer** | See §11. |
-| **Particle Editor** | See §12.2. |
+| **UI Designer** | See §12. |
+| **Particle Editor** | See §13.2. |
+| **Audio Mixer / Sound Event Editor** | See §13.3. |
 | **Network Debugger** | Ping/jitter/rollback visualizer, per-tick checksum timeline, desync diff viewer. |
 | **Build Settings** | Scene list, platform targets (Windows/macOS/Android), quality tiers, Build / Build & Run. |
 
 **Editor infrastructure**: an undo/redo command stack (reflection-based property diff commands), selection service,
 editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails cache, and the editor scripting API.
 
-### 12.1 Level design / world-building tools
+### 13.1 Level design / world-building tools
 
 * **Terrain**: heightmap tiles (clipmap rendering), sculpt/smooth/flatten/stamp brushes, splat-map texture painting,
   holes, and a deterministic collision heightfield (Jolt `HeightFieldShape`).
@@ -716,7 +863,7 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 * **Navigation**: navmesh baking with **Recast/Detour** (Zlib), using deterministic pathfinding queries in the sim.
 * **Lighting tools**: light probe and reflection probe placement, lightmap baking, and GI debug visualizers.
 
-### 12.2 Particle Editor (built-in)
+### 13.2 Particle Editor (built-in)
 
 A dedicated, dockable **Particle Editor** window opens when you double-click a `*.dgvfx` asset. It edits the graph IR
 from §8.6.
@@ -744,16 +891,29 @@ from §8.6.
 * **Extensible**: plugins add modules (`IVfxModule`: graph definition + Slang snippet + CPU bytecode implementation),
   renderers (`IVfxRenderer`), and editor drawers.
 
+### 13.3 Audio tools (built-in)
+
+| Tool | Function |
+|---|---|
+| **Sound Event Editor** | Opened by double-clicking a `*.dgsound`. A container tree (Random/Sequence/Switch/Blend/Layer) with drag-and-drop clips, per-node randomization, parameter → property curves (shared curve widget), instance limits, and bus routing. **Preview** with a 2D/3D position pad (drag the emitter around a virtual listener), live parameter sliders, and a "play N times" button to audition randomization. |
+| **Audio Mixer** | Unity-style mixer window: channel strips per bus with faders, peak/RMS/LUFS meters, mute/solo, effects chains (add/reorder/bypass), sends, and a snapshot list with blend preview. Changes made **during play mode** can be kept or reverted on stop. |
+| **Attenuation Editor** | Distance/low-pass/spread/reverb-send curves with a top-down preview, and the cone editor. |
+| **Music Editor** | Segment timeline on a beat/bar grid, stem layers, markers, transition matrix, and stinger setup. |
+| **Clip import settings** | Waveform view, loop points and markers, format/quality per platform with estimated size, and loudness normalization. |
+| **Scene View gizmos** | Min/max attenuation spheres, cones, shape emitters, reverb zone volumes and blend distances, and acoustic geometry colored by material. |
+| **Acoustics baking** | Paint or assign acoustic materials, place reflection/pathing probes, and bake Steam Audio reflections and pathing per level (stored as level-scoped derived data). |
+| **Audio Debugger** | Live list of event instances (real/virtual, audibility, bus, position), occlusion rays drawn in the Scene View, a per-emitter "why is this not audible?" readout, voice/CPU budget graphs per platform tier, and a rollback trace showing cancelled and deduplicated sounds. |
+
 ---
 
-## 13. Built-in Deterministic Multiplayer Backend (`dg::net`)
+## 14. Built-in Deterministic Multiplayer Backend (`dg::net`)
 
 The engine ships a complete, **built-in** deterministic netcode stack: the client library, a dedicated session server,
 and the tooling. A game gets multiplayer by defining `InputCommand` and writing sim systems; it never writes
 networking code. The model is **predict/rollback with server-confirmed inputs**, the same family of architecture as
 Photon Quantum 3. That is a design reference only; the implementation is our own.
 
-### 13.1 Topology & roles
+### 14.1 Topology & roles
 
 ```
                       ┌──────────────────────────────────────────────────┐
@@ -771,8 +931,8 @@ Photon Quantum 3. That is a design reference only; the implementation is our own
 |---|---|
 | **Client** | Samples local input → sends `InputCommand` for tick `T + inputOffset`. Runs **predicted** ticks with guessed remote inputs. On receiving confirmed inputs, it **rolls back** to the last verified tick and re-simulates. Sends checksums of verified ticks. |
 | **Server — input authority** (always on) | Owns the session clock. Collects inputs per tick until a **deadline**, substitutes a default or repeated input for any late or missing player, and broadcasts the **confirmed input set** for that tick. A late input is never "re-opened": the server's set is final, so every client agrees on history. |
-| **Server — checksum validator** (always on) | Compares per-tick checksums sent by clients (§13.4) and triggers resync (§13.5). |
-| **Server — authoritative simulation** (optional, `mode=verify`) | Runs the **same sim** headlessly on the room's level (§14.1), using only confirmed inputs. It never predicts and never rolls back. It is the ground truth for checksums, snapshots, late joins, and anti-cheat. |
+| **Server — checksum validator** (always on) | Compares per-tick checksums sent by clients (§14.4) and triggers resync (§14.5). |
+| **Server — authoritative simulation** (optional, `mode=verify`) | Runs the **same sim** headlessly on the room's level (§15.1), using only confirmed inputs. It never predicts and never rolls back. It is the ground truth for checksums, snapshots, late joins, and anti-cheat. |
 
 Two server modes:
 
@@ -784,7 +944,7 @@ Two server modes:
 
 Peer-hosted sessions (one client also runs the server room in-process) use the same code path, for LAN and dev.
 
-### 13.2 Ticks, frames and time synchronization
+### 14.2 Ticks, frames and time synchronization
 
 * **Verified tick**: every input for it is confirmed by the server. The state is final and identical everywhere.
 * **Predicted tick**: simulated ahead of the last verified tick using predicted remote inputs. It is rolled back when
@@ -796,7 +956,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * The **max prediction window** (e.g. 10 ticks) is configurable. Beyond it, the client stalls its sim, rather than
   diverging further.
 
-### 13.3 Input pipeline
+### 14.3 Input pipeline
 
 * `InputCommand` is a reflected struct (`DG_REFLECT(Input)`). It is bit-packed via reflection, with delta-compression
   against the previous tick.
@@ -809,7 +969,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * **Predicting remote inputs**: by default repeat the last confirmed input. Games can override this per input field
   (e.g. reset "fire" to false).
 
-### 13.4 State hashing (desync detection)
+### 14.4 State hashing (desync detection)
 
 * **What is hashed**: all `Sim`-tagged components, walked via reflection in canonical entity/archetype order, plus the
   entity allocator state, the sim RNG, the physics state hash (Jolt/Box2D), the tick number, and registered sim
@@ -821,7 +981,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * On mismatch, the server can request the **hash tree** from the divergent client. Comparing it with the reference tree
   pinpoints the exact component type and entity range that diverged, and this goes into the desync report.
 
-### 13.5 Resync of desynced clients
+### 14.5 Resync of desynced clients
 
 ```
  client X hash(T) ≠ reference hash(T)
@@ -853,22 +1013,22 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
   majority vote until it resyncs successfully.
 * The **same path serves late join and reconnect**: a joining client is simply a client whose state is "missing" at T.
 
-### 13.6 Session lifecycle & compatibility
+### 14.6 Session lifecycle & compatibility
 
 1. Client connects → **handshake** with the determinism manifest: engine build hash, sim-module/plugin hashes,
    sim-asset content hash for the room's level, tick rate, and `InputCommand` schema hash. Any mismatch is rejected
    with a clear error.
 2. Room start: the server broadcasts the start tick, initial RNG seed, and player slots. All peers load the level and
    start from identical state.
-3. Running: the input/confirm loop (§13.2–13.3), checksums (§13.4), and resync on demand (§13.5).
+3. Running: the input/confirm loop (§14.2–13.3), checksums (§14.4), and resync on demand (§14.5).
 4. End: the server optionally stores a **replay** (initial snapshot + confirmed inputs). This is compact, and can be
    re-simulated by any headless build for verification, spectating, or bug repro.
 
-### 13.7 Server architecture (`dg-server`)
+### 14.7 Server architecture (`dg-server`)
 
 * **One process, many rooms**. Each room runs on a job-system worker, with a fixed tick timer per room.
 * Room capacity and modes (`relay` vs `verify`) are set by room config. In `verify` mode a room loads its level
-  through the headless asset path (§14.1).
+  through the headless asset path (§15.1).
 * **Management API** (HTTP/JSON, plugin-replaceable): create/list/close rooms, health, metrics (Prometheus format),
   and replay download.
 * **Matchmaking/lobby** is out of the core. It is a plugin interface (`ILobbyService`) with a simple built-in room
@@ -876,7 +1036,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * **Transport** is behind `ITransport`: ENet (default, UDP), GameNetworkingSockets (encryption, relays), and a WebSocket
   fallback (later). Channels: unreliable-sequenced (inputs), reliable-ordered (commands, snapshots, control).
 
-### 13.8 Client API surface (C++ and Luau)
+### 14.8 Client API surface (C++ and Luau)
 
 ```lua
 -- view-side Luau (presentation): connecting and status
@@ -891,14 +1051,14 @@ Presentation helpers: `IsPredicted(entity)`, a "verified vs predicted" interpola
 **rollback-safe events** (sim events raised on predicted ticks are delivered to the presentation layer with
 `predicted=true`, then confirmed or cancelled, so a sound or VFX plays once and isn't duplicated on resimulation).
 
-### 13.9 Non-deterministic replication (optional plugin)
+### 14.9 Non-deterministic replication (optional plugin)
 
 State replication (server-authoritative snapshots + interpolation) for games that don't fit lockstep, such as MMO-scale
 worlds. It is not the default and is not covered by the determinism guarantees.
 
 ---
 
-## 14. Build Configurations & Packaging
+## 15. Build Configurations & Packaging
 
 | Config | Asserts | Optimizations | Tracy | Editor | Notes |
 |---|---|---|---|---|---|
@@ -906,7 +1066,7 @@ worlds. It is not the default and is not covered by the determinism guarantees.
 | `Development` | ✅ | ✅ | ✅ | ✅ | Default daily config. |
 | `Profile` | minimal | ✅ | ✅ | ❌ | Player only. |
 | `Shipping` | ❌ | ✅ (+LTO) | ❌ | ❌ | Static plugins, stripped symbols, cooked paks only. |
-| `Server` (`DG_HEADLESS`) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§14.1). |
+| `Server` (`DG_HEADLESS`) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§15.1). |
 
 * **The determinism compile flags are identical in all configs** for sim translation units (`dg_sim_target()` CMake
   helper). This means Debug and Shipping builds can play together.
@@ -920,9 +1080,9 @@ worlds. It is not the default and is not covered by the determinism guarantees.
   (build + emulator tests), and `linux-x64` (headless server, tools). Determinism replay jobs run across all of them,
   **including the headless server build** (§5.4).
 
-### 14.1 Headless build mode (per-level)
+### 15.1 Headless build mode (per-level)
 
-A **headless build** is the simulation without presentation. It produces dedicated servers (`verify` rooms, §13.1),
+A **headless build** is the simulation without presentation. It produces dedicated servers (`verify` rooms, §14.1),
 bots, replay verifiers, and CI determinism runners — all **for a specified set of levels**.
 
 **Compile-time profile (`DG_HEADLESS=1`)**
@@ -944,7 +1104,7 @@ bots, replay verifiers, and CI determinism runners — all **for a specified set
   view-only components on prefabs. It keeps collision shapes, navmesh, data tables, sim scripts (Luau bytecode),
   sim components, and prefabs.
 * The output is a small `server.dgpak` and a **sim-asset manifest hash per level**. That hash is the one clients send in
-  the handshake (§13.6), so a server can only host levels whose sim content matches the clients' builds.
+  the handshake (§14.6), so a server can only host levels whose sim content matches the clients' builds.
 
 **Packaging**
 
@@ -965,11 +1125,11 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 ```
 
 * The editor can launch a **local headless server** in-process or as a child process for multiplayer play-mode testing
-  (Game View with N simulated clients, §12).
+  (Game View with N simulated clients, §13).
 
 ---
 
-## 15. Roadmap (phased)
+## 16. Roadmap (phased)
 
 | Phase | Deliverables |
 |---|---|
@@ -979,7 +1139,8 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 | **3 — Scripting & physics** | Luau sandbox, binding generator, `dg.d.luau`, Jolt + Box2D deterministic integration, hot reload. |
 | **4 — Editor MVP** | Docking layout, Hierarchy/Inspector/Scene/Game/Project/Console, gizmos, undo/redo, play mode, scenes, prefabs (+ overrides). |
 | **5 — Networking** | Headless build profile + level-scoped cook, `dg-server` (relay → verify mode), confirmed-input protocol, predict/rollback, hierarchical state hashing, snapshot resync / late join, network debugger panel. |
-| **6 — Content** | FBX (ufbx), animation (ozz), audio, 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
+| **6 — Content** | FBX (ufbx), animation (ozz), 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
+| **6a — Audio** | Audio thread + miniaudio backend, clips/Opus cooking, SoundEvents + containers, attenuation, bus mixer + snapshots, virtual voices, rollback-safe playback; then Steam Audio HRTF/occlusion, reverb zones, baked acoustics, music system, and the audio editor tools (§13.3). |
 | **6b — VFX** | Particle graph IR + YAML serialization, module-stack editor, CPU SIMD runtime → GPU fused-kernel runtime, sprites/ribbons/meshes, sorting, depth/SDF collision, node-graph view, flipbooks, budgets/LOD, profiler integration. |
 | **7 — Packaging** | `dg-cook`, `.dgpak`, `dg-package` for Windows/macOS/Android, Build Settings window. |
 | **8 — Advanced rendering** | Shadows, post-FX, baked GI → DDGI → Lumen-style SDF/surface-cache GI → HW RT path; mobile tier tuning. |
@@ -988,7 +1149,7 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 
 ---
 
-## 16. Key Risks & Open Questions
+## 17. Key Risks & Open Questions
 
 | Risk | Mitigation |
 |---|---|
@@ -999,6 +1160,7 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 | Server cost in `verify` mode | `relay` mode for casual rooms; headless builds strip presentation; many rooms per process. |
 | Rollback cost with heavy physics | Configurable rollback window; lockstep mode; physics LOD for sim entities; profile on Android early. |
 | GPU particle cost on mobile/TBDR (overdraw, bandwidth) | CPU SIMD path, trimmed sprite geometry, budgets per tier, low-resolution translucency, profiling on Android from the start of phase 6b. |
+| Audio glitches from priority inversion or allocation on the audio thread | Real-time-safe rules (no locks/allocations/IO on the audio thread), lock-free queues, an underrun counter in CI soak tests, and Android low-latency testing on real devices. |
 | Lumen-style GI complexity | Phased tiers; baked/DDGI first; time-boxed research spikes; AMD MIT references. |
 | Scope (an engine of Unity+UE breadth) | Strict phase gating; every module behind interfaces so features can be delayed without refactors. |
 
@@ -1012,7 +1174,7 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 
 ---
 
-## 17. References
+## 18. References
 
 * Lumen — SIGGRAPH 2022 Advances: <https://advances.realtimerendering.com/s2022/SIGGRAPH2022-Advances-Lumen-Wright%20et%20al.pdf>
 * Lumen overview (Epic tech blog): <https://www.unrealengine.com/en-US/tech-blog/unreal-engine-5-goes-all-in-on-dynamic-global-illumination-with-lumen>
