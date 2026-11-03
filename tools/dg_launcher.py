@@ -519,8 +519,20 @@ class Launcher(tk.Tk):
             pass
 
 
+def bring_to_front(window: tk.Tk) -> None:
+    # Started from a terminal, a Tk window on macOS opens behind the active app; raise it once, then let it behave.
+    window.lift()
+    window.attributes("-topmost", True)
+    window.after(500, lambda: window.attributes("-topmost", False))
+    window.focus_force()
+
+
 def main() -> None:
-    Launcher().mainloop()
+    print("[dg] Detergine Launcher is open (close its window to return here)", flush=True)
+    app = Launcher()
+    app.after(100, lambda: bring_to_front(app))
+    app.mainloop()
+    print("[dg] Detergine Launcher closed", flush=True)
 
 
 if __name__ == "__main__":
