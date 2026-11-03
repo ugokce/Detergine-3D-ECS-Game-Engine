@@ -1,0 +1,3 @@
+#!/usr/bin/env sh
+# Detergine developer tool launcher (macOS/Linux). See tools/dg.py or run `./dg --help`.
+exec python3 "$(dirname "$0")/tools/dg.py" "$@"

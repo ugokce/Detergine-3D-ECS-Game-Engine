@@ -226,6 +226,10 @@ nondeterminism in anything that touches the simulation.
 /editor/                   dg::editor – ImGui editor app and tool panels
 /apps/player/              Shipping runtime host
 /apps/server/              Headless server/relay
+/dg, /dg.cmd               Developer tool launchers (macOS/Linux, Windows) → tools/dg.py (§15.2)
+/CMakePresets.json         Configure/build/test presets per platform
+/tools/dg.py               Project generation, build, run, test, determinism check
+/tools/dg_launcher.py      Launcher GUI over dg.py (`dg gui`, Launcher.command / Launcher.bat)
 /tools/dg-reflect/         Reflection code generator
 /tools/dg-cook/            Asset cooker CLI
 /tools/dg-package/         Packaging CLI (Windows/macOS/Android)
@@ -1064,9 +1068,9 @@ worlds. It is not the default and is not covered by the determinism guarantees.
 |---|---|---|---|---|---|
 | `Debug` | ✅ | ❌ | ✅ | ✅ | Validation layers on. |
 | `Development` | ✅ | ✅ | ✅ | ✅ | Default daily config. |
-| `Profile` | minimal | ✅ | ✅ | ❌ | Player only. |
-| `Shipping` | ❌ | ✅ (+LTO) | ❌ | ❌ | Static plugins, stripped symbols, cooked paks only. |
-| `Server` (`DG_HEADLESS`) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§15.1). |
+| `Profile` (planned) | minimal | ✅ | ✅ | ❌ | Player only. |
+| `Release` (= Shipping) | ❌ | ✅ (+LTO) | ❌ | ❌ | Static plugins, stripped symbols, cooked paks only. |
+| `Server` profile (`DG_HEADLESS`, any config) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§15.1). |
 
 * **The determinism compile flags are identical in all configs** for sim translation units (`dg_sim_target()` CMake
   helper). This means Debug and Shipping builds can play together.
@@ -1126,6 +1130,47 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 
 * The editor can launch a **local headless server** in-process or as a child process for multiplayer play-mode testing
   (Game View with N simulated clients, §13).
+
+### 15.2 Developer workflow (project generation, build & run)
+
+The canonical build description is **CMake presets** (`CMakePresets.json`). `dg` is a thin, dependency-free Python 3.9+
+tool on top of them, so that the same few commands work on every host:
+
+| Command | Effect |
+|---|---|
+| `dg setup [--vcpkg]` | Checks CMake/Git/compilers/Ninja; optionally clones and bootstraps vcpkg into `external/vcpkg`. |
+| `dg generate [--ide]` | Configures the host's default preset. `--ide` creates and opens an Xcode (macOS) or Visual Studio 2022 + ClangCL (Windows) project with Debug/Development/Release configurations. |
+| `dg build [debug\|dev\|release] [editor\|player\|server\|tests]` | Builds everything or one app. Configures first if needed. |
+| `dg run [config] [app] [-- args]` | Builds, then runs the app (default: editor on desktop). |
+| `dg test [config] [-L label]` | Builds, then runs ctest (`determinism`, `smoke` labels). |
+| `dg determinism` | Runs the player headless in Debug and Release and fails unless the final state hashes are identical. |
+| `dg clean [--all]`, `dg presets` | Deletes build trees; lists presets. |
+| `dg gui` | Opens the **Detergine Launcher** (below). |
+
+Common options on every command: `--preset P`, `-D NAME=VALUE` (engine CMake options such as `DG_HEADLESS`,
+`DG_BUILD_EDITOR`, `DG_BUILD_TESTS`, `DG_WARNINGS_AS_ERRORS`; the tree is reconfigured only when a value changes),
+`-j N`, `--verbose`, `--fresh`.
+
+**Detergine Launcher** (`tools/dg_launcher.py`, tkinter, standard library only): a small GUI with the platform preset
+(filtered to the host), configuration, build target, all engine build options, parallel jobs, verbose/fresh toggles,
+run options (app, headless, fast, ticks, tick rate, players, seed, level, extra arguments), and the test label filter.
+Buttons cover Build, Run, Test, Check Setup, Generate, Open IDE, Determinism, Clean and Open Build Folder, plus Stop.
+The output streams live with colored errors and warnings. **Every action runs the equivalent `dg` command, which is
+shown and copyable**, so the GUI never diverges from the CLI. Settings persist per user in `.dg/launcher.json`.
+`Launcher.command` (macOS) and `Launcher.bat` (Windows) open it with a double-click.
+
+* **Presets**: `macos-arm64` (Ninja), `macos-arm64-xcode`, `windows-x64` (Ninja + clang-cl; `dg` loads the VS developer
+  environment automatically), `windows-x64-vs2022`, `linux-x64`, `linux-x64-server` (headless profile), `android-arm64`
+  (NDK via `ANDROID_NDK_HOME`). Each has `-debug`, `-dev`, and `-release` build and test presets for IDE integrations
+  (VS Code CMake Tools, CLion, Visual Studio).
+* All presets use **multi-config generators**, so one build tree holds Debug, Development, and Release. Switching
+  configuration never requires regenerating. Binaries land in `build/<preset>/bin/<Config>/`.
+* The host default is Ninja when it is installed, and otherwise the IDE generator (Xcode / Visual Studio), so a fresh
+  machine builds with no extra installs.
+* vcpkg is picked up automatically from `VCPKG_ROOT` or `external/vcpkg`. Platform toolchains (the Android NDK) are
+  chain-loaded through it.
+* `tests/SimDeterminismTest.cpp` holds a **golden state hash** recorded on macOS ARM64. Every platform and configuration
+  must reproduce it; this is the seed of the determinism CI (§5.4).
 
 ---
 

@@ -138,14 +138,28 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 
 ## Build & test
 
+Use the `dg` tool (`./dg` on macOS/Linux, `dg` on Windows; DESIGN.md §15.2). It wraps the CMake presets.
+
 ```bash
-cmake --preset macos-arm64-dev      # or windows-x64-dev, android-arm64-dev
-cmake --build --preset macos-arm64-dev
-ctest --preset macos-arm64-dev      # unit + integration
-ctest --preset macos-arm64-dev -L determinism
+./dg setup                    # check the toolchain (add --vcpkg to bootstrap vcpkg)
+./dg build debug              # or dev (default) / release; optionally an app: editor, player, server, tests
+./dg run release player -- --headless --ticks 300
+./dg test debug               # ctest; -L determinism or -L smoke to filter
+./dg determinism              # Debug vs Release sim hashes must match
+./dg generate --ide           # open an Xcode / Visual Studio project
+./dg build -D DG_HEADLESS=ON  # engine CMake options via -D (reconfigures only on change); also -j N, --verbose, --fresh
+./dg gui                      # Launcher GUI with every option (tools/dg_launcher.py)
 ```
 
-(These presets are the target layout; create them as the build system lands. Keep this section in sync with reality.)
+- `tools/dg.py` is the single source of truth for build logic. The launcher only composes `dg` commands, so put new
+  behavior in `dg.py` first, and add a GUI control for it. New engine CMake options go in `cmake/DgOptions.cmake`
+  **and** `ENGINE_OPTIONS` in `dg.py`, so that they appear in the launcher.
+
+- Configurations: `Debug`, `Development` (optimized + asserts, the default), `Release` (= Shipping: LTO, no asserts).
+- Raw CMake works too: `cmake --preset macos-arm64-xcode`, then `cmake --build --preset macos-arm64-xcode-debug`.
+- New engine libraries use `dg_add_module(<name> [SIM] ...)`, and apps use `dg_add_app(...)` (`cmake/DgTargets.cmake`).
+  Sim code goes in a `SIM` module so it gets the strict FP flags.
+- If you change the sim on purpose, re-record `kGoldenHash` in `tests/SimDeterminismTest.cpp` and say so in the commit.
 
 - Every bug fix comes with a regression test. Every new sim system comes with a replay-based determinism test.
 - Renderer changes: add or update a golden-image test where practical, and run with Vulkan validation layers clean.

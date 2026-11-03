@@ -30,3 +30,22 @@
 *.exe
 *.out
 *.app
+
+# Build trees and generated files
+/build/
+/external/vcpkg/
+/vcpkg_installed/
+compile_commands.json
+CMakeUserPresets.json
+__pycache__/
+
+# OS / IDE
+.DS_Store
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.xcuserstate
+
+# Launcher GUI settings (per user)
+/.dg/
