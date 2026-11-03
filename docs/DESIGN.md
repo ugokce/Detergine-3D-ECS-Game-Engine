@@ -60,6 +60,7 @@ nondeterminism in anything that touches the simulation.
 | Hashing | **xxHash (XXH3)** | BSD-2 | Asset IDs, state checksums, desync detection. |
 | Compression | **zstd**, **LZ4** | BSD | zstd for packages/snapshots, LZ4 for fast network/rollback buffers. |
 | Text serialization | **rapidyaml** (assets/scenes), **yyjson** (configs/tools) | MIT | YAML chosen for diff-friendly scenes/prefabs, like Unity. |
+| MCP server | **Custom** JSON-RPC 2.0 layer (yyjson) + **cpp-httplib** for Streamable HTTP | — / MIT | Pinned to MCP 2025-11-25 behind a protocol adapter; no official C++ MCP SDK exists (§14.5). |
 | File watching | **efsw** | MIT | Asset + Lua hot reload. |
 | Testing | **doctest** (unit), custom determinism harness | MIT | |
 | Crash reporting | **sentry-native** (crashpad backend) | MIT | Optional plugin. |
@@ -225,6 +226,8 @@ nondeterminism in anything that touches the simulation.
   scene/                   dg::scene – scenes, prefabs, transforms, hierarchy
   plugin/                  dg::plugin – module manager, plugin ABI
 /editor/                   dg::editor – ImGui editor app and tool panels
+/editor/mcp/               dg::mcp    – MCP server for AI agents (editor-only, §14.5)
+/apps/mcp-bridge/          dg-mcp stdio bridge launched by MCP clients
 /apps/player/              Shipping runtime host
 /apps/server/              Headless server/relay
 /dg, /dg.cmd               Developer tool launchers (macOS/Linux, Windows) → tools/dg.py (§16.2)
@@ -309,7 +312,7 @@ struct DG_REFLECT(Sim) Health {
   * **Shipping / Android / iOS**: **static linking** with generated registration (no dynamic loading on iOS,
     and fewer issues on Android).
 * Extension points (service locator + interfaces): `IAssetImporter`, `IRenderFeature` (inserts render-graph passes),
-  `IEditorPanel`, `IInspectorDrawer`, `IComponentTool`, `ISystemProvider`, `ITransport`, `IScriptLibrary`, `IPlatformService`.
+  `IEditorPanel`, `IInspectorDrawer`, `IComponentTool`, `IMcpToolProvider`, `ISystemProvider`, `ITransport`, `IScriptLibrary`, `IPlatformService`.
 * Plugins that register **sim systems/components** contribute to the **sim checksum**: a lockstep session
   verifies that all peers run the identical set and version of deterministic plugins (manifest hash exchange).
 
@@ -982,6 +985,7 @@ closely matches Unity's dark/light skins.
 | **UI Designer** | See §13. |
 | **Particle Editor** | See §14.2. |
 | **Audio Mixer / Sound Event Editor** | See §14.3. |
+| **MCP** | AI agent connections, activity log, permissions — see §14.5. |
 | **Network Debugger** | Ping/jitter/rollback visualizer, per-tick checksum timeline, desync diff viewer. |
 | **Build Settings** | Scene list, platform targets (Windows/macOS/Android), quality tiers, Build / Build & Run. |
 
@@ -1074,6 +1078,104 @@ to review content.
   time) and notifies that have no handler.
 * Everything is undoable and saved as diff-friendly YAML. Plugins can add viewer panels (`IAnimViewerPanel`) and graph
   nodes (`IAnimNode`, with sim and presentation implementations).
+
+### 14.5 MCP server — AI agent integration (`dg::mcp`)
+
+The editor embeds a **Model Context Protocol (MCP) server**, so AI agents such as Claude Code (or any MCP client) can
+inspect and edit a project through the engine itself: create and modify entities and prefabs, set up animations, write
+and attach Luau gameplay logic, run play mode to verify, and save levels. Agents work **through the same editor
+commands a human uses**. Every change is reflected in the open editor, is undoable, and ends up as diff-friendly YAML
+and Luau files in the repository.
+
+**Architecture**
+
+```
+ Claude Code / MCP client
+   │  stdio (JSON-RPC 2.0)                  │  Streamable HTTP (127.0.0.1 only, bearer token)
+   ▼                                        ▼
+ dg-mcp (bridge process) ── local IPC ──► dg::mcp server (inside dg-editor, editor-only module)
+   │ starts `dg-editor --headless --mcp`      │ protocol layer: initialize, tools, resources, prompts,
+   │ if no editor is running                  │   progress, cancellation, tasks, list-changed notifications
+                                              │ request queue → marshalled onto the editor main thread
+                                              ▼
+                       Editor services: command stack (undo/redo) · selection · asset DB · scene/prefab
+                       serializer · anim graph compiler · Luau checker · play mode · viewport capture
+```
+
+* **Protocol implementation**: our own, small JSON-RPC 2.0 layer (yyjson) **pinned to MCP spec revision 2025-11-25**,
+  with version negotiation in `initialize`. Spec differences live in a protocol adapter, so later revisions (the
+  current drafts change sessions and move tasks into an extension) can be added without touching tool code. Community
+  C++ MCP SDKs exist, but none is official; they were evaluated and not adopted, to keep the dependency surface small.
+* **Transports**:
+  * **stdio** (default for Claude Code): the client launches `dg-mcp`, a tiny bridge that connects to the running editor
+    over a local socket (Unix domain socket / Windows named pipe in `.dg/`). If no editor is open, it starts a
+    **headless editor** on the project (`dg-editor --headless --mcp`; offscreen rendering for screenshots when a GPU is
+    available).
+  * **Streamable HTTP** for clients that prefer it: it binds to **127.0.0.1 only** on a random port, requires a per-session
+    bearer token written to `.dg/mcp.json`, and validates the `Origin` header (DNS-rebinding protection, as the spec
+    requires). It is off by default.
+* **Threading**: requests are parsed on an IO thread and executed on the editor main thread through a command queue.
+  Long operations (asset import, lightmap/acoustics bakes, builds, determinism checks) report **progress
+  notifications**, honor **cancellation**, and are exposed as MCP tasks where the client supports them.
+* **Setup**: `dg mcp install` writes a project-scoped `.mcp.json` for Claude Code (launching `dg mcp serve`, which locates
+  or builds `dg-mcp`). `dg mcp status` shows connections. The Launcher (§16.2) has matching buttons.
+
+**Tools** (namespaced; JSON Schemas for inputs and outputs are **generated from `dg::refl`**, so every reflected component
+and property is editable with validated types, ranges, and enums, and new components appear automatically)
+
+| Area | Tools |
+|---|---|
+| **Levels & scenes** | `level.list`, `level.open`, `level.new`, `level.save`, `level.save_as`, `level.get_hierarchy` (paginated, filterable), `level.diff` (unsaved changes vs. disk) |
+| **Entities & components** | `entity.create` (empty, from components, or from a prefab), `entity.delete`, `entity.duplicate`, `entity.set_parent`, `entity.find` (by name, tag, component, or spatial query), `component.add`, `component.remove`, `component.get`, `component.set` (property paths + typed values), `transform.set` / `transform.align` (snap, align to surface) |
+| **Prefabs** | `prefab.create_from_entity`, `prefab.instantiate`, `prefab.list_overrides`, `prefab.apply_overrides`, `prefab.revert_overrides`, `prefab.create_variant` |
+| **Assets** | `asset.search`, `asset.info`, `asset.import` (files inside the project only), `material.create` / `material.set`, `asset.thumbnail` (image) |
+| **Animation** | `anim.list_clips`, `anim.clip_info`, `anim.graph_create`, `anim.graph_edit` (add states, transitions, parameters, blend spaces, layers — as a batch), `anim.graph_validate` (compiler diagnostics, incl. sim/presentation rules §10.4), `anim.assign_animator`, `anim.add_event`, `anim.preview` (Animation Viewer render at time t → image) |
+| **Logic (Luau)** | `script.api` (slices of the generated `dg.d.luau`), `script.create` (`*.sim.luau` / `*.view.luau` from content), `script.read`, `script.edit` (text patch), `script.check` (Luau type check + **determinism lint** §6.3 → diagnostics), `script.attach` (register a system or bind it to an entity/prefab) |
+| **VFX & audio** | `vfx.create_from_template`, `vfx.set_parameter`, `audio.create_event`, `audio.assign_emitter` |
+| **Play & verify** | `play.start`, `play.stop`, `play.step` (N ticks), `play.state_hash`, `play.set_input` (scripted inputs), `verify.determinism` (headless replay twice → compare hashes), `editor.console` (recent logs, filters), `editor.screenshot` (Scene/Game view or a camera → MCP image content) |
+| **Editor** | `edit.batch` (several edits as one atomic undo step), `editor.undo`, `editor.redo`, `editor.select`, `editor.focus` (so the human sees what the agent changed) |
+| **Build** (full permission) | `build.run` (`dg build`), `build.test` |
+
+**Resources & prompts**
+
+* Resources: `dg://project/manifest`, `dg://levels/{guid}` (level YAML), `dg://schema/components` (reflected JSON Schemas),
+  `dg://api/luau` (`dg.d.luau`), `dg://docs/agent-guide` (engine conventions for agents: determinism rules, sim vs. view
+  scripts, prefab workflow), and `dg://console/recent`. Level and asset resources support **subscriptions**, so agents
+  are notified when a human edits the same level.
+* Prompts (templates surfaced as client slash commands): `blockout_level`, `create_character` (mesh + skeleton + animator +
+  controller script), `add_gameplay_system`, `fix_desync`.
+* The `initialize` result carries **server instructions** with the recommended loop: read the schema and API → edit in
+  batches → `script.check` / `anim.graph_validate` → `play.step` + `editor.screenshot` to verify →
+  `verify.determinism` → `level.save`.
+
+**Safety model**
+
+* **Nothing reaches disk until `level.save` (or an asset-creating tool) runs**, and everything written is ordinary,
+  reviewable project files (YAML, Luau). Git is the final review step.
+* **Every mutating call is one undo transaction**, labeled `MCP: <tool>` in the editor's history, so a human can undo any
+  agent action. `edit.batch` is all-or-nothing.
+* **Permission levels** per project (`.dg/mcp-policy.yaml`, editable in the MCP panel): `read-only`, `edit` (default:
+  mutations allowed, saving needs confirmation), and `full` (save, import, build, play). There is also a per-tool
+  allow/deny list.
+* **Confirmations**: destructive operations (deleting assets, overwriting a level, builds) ask the human, either through
+  MCP **elicitation** when the client supports it or with an editor modal.
+* **Sandboxing**: file access is limited to the project directory (`Assets/`, `Scripts/`, `Levels/`). There is **no
+  shell or arbitrary native-code execution tool**. Luau written by agents runs only inside the normal script sandbox
+  (§6.3).
+* **Play mode**: edits made while playing apply to the play world and are discarded on stop (with the same "keep
+  changes" option as the editor). Tool results always say which world they touched. MCP edits are disabled while
+  connected to a networked session.
+* **Never shipped**: `dg::mcp` is an editor-only module. It is excluded from players, Release builds, and headless server
+  builds. The `--mcp` flag only exists on the editor binary.
+
+**MCP panel (editor)**
+
+Connection status and connected clients. A live **activity log** of every tool call (arguments, result, duration, and
+affected entities highlighted in the Hierarchy and Scene View), with **undo per call**. Permission level and tool toggles.
+A **pause agent** switch that queues incoming mutating calls until resumed.
+
+**Extensibility**: plugins register tools, resources, and prompts through `IMcpToolProvider`. Tool schemas come from
+reflected request and response structs, so a plugin's tools get the same validation, undo, and permission handling.
 
 ---
 
@@ -1313,6 +1415,7 @@ tool on top of them, so that the same few commands work on every host:
 | `dg determinism` | Runs the player headless in Debug and Release and fails unless the final state hashes are identical. |
 | `dg clean [--all]`, `dg presets` | Deletes build trees; lists presets. |
 | `dg gui` | Opens the **Detergine Launcher** (below). |
+| `dg mcp install \| serve \| status` | Writes the project's `.mcp.json` for Claude Code, runs the stdio bridge, or shows connections (§14.5). |
 
 Common options on every command: `--preset P`, `-D NAME=VALUE` (engine CMake options such as `DG_HEADLESS`,
 `DG_BUILD_EDITOR`, `DG_BUILD_TESTS`, `DG_WARNINGS_AS_ERRORS`; the tree is reconfigured only when a value changes),
@@ -1350,6 +1453,7 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 | **2 — Rendering MVP** | RHI (Vulkan on Windows, MoltenVK on macOS, Android), render graph, bindless, glTF import, PBR forward/deferred, ImGui. |
 | **3 — Scripting & physics** | Luau sandbox, binding generator, `dg.d.luau`, Jolt + Box2D deterministic integration, hot reload. |
 | **4 — Editor MVP** | Docking layout, Hierarchy/Inspector/Scene/Game/Project/Console, gizmos, undo/redo, play mode, scenes, prefabs (+ overrides). |
+| **4b — MCP server** | `dg::mcp` protocol layer + stdio bridge, reflection-generated tool schemas, level/entity/component/prefab/asset tools, Luau script tools with determinism lint, play/step/screenshot/verify tools, undo transactions, permission policy, MCP panel, `dg mcp install`; then animation, VFX, and audio tools, plus HTTP transport. Each later phase adds MCP tools for its features. |
 | **5 — Networking** | Headless build profile + level-scoped cook, `dg-server` (relay → verify mode), confirmed-input protocol, predict/rollback, hierarchical state hashing, snapshot resync / late join, network debugger panel. |
 | **6 — Content** | FBX (ufbx), 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
 | **6c — Animation** | Skeleton/clip import (ufbx, fastgltf), ozz runtime jobs, compute skinning (+ mobile vertex skinning), anim graph (state machines, blend spaces, layers, inertialization), sim anim state with baked tracks and sim events, IK and foot placement, update-rate and joint LOD, Animation Viewer, then the graph editor/debugger, retargeting, morph targets, ragdolls, and crowd VAT. |
@@ -1376,6 +1480,8 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 | Audio glitches from priority inversion or allocation on the audio thread | Real-time-safe rules (no locks/allocations/IO on the audio thread), lock-free queues, an underrun counter in CI soak tests, and Android low-latency testing on real devices. |
 | Sim/presentation animation mismatch (a hitbox from the baked track vs. what the player sees) | Same source clip and sample times; the viewer overlays sim tracks on the presented pose; tolerance tests in CI; inertialization hides corrections instead of popping. |
 | Lumen-style GI complexity | Phased tiers; baked/DDGI first; time-boxed research spikes; AMD MIT references. |
+| AI agents making unwanted or destructive edits through MCP | Undo transaction per call; nothing saved without `level.save`; permission levels and confirmations; project-only file access; no shell or native-code tools; activity log; pause switch. |
+| MCP spec churn (sessions, tasks moving to extensions in newer drafts) | Pinned revision with version negotiation; differences isolated in the protocol adapter; conformance tests against the official MCP inspector. |
 | Scope (an engine of Unity+UE breadth) | Strict phase gating; every module behind interfaces so features can be delayed without refactors. |
 
 **Open questions:**
@@ -1398,3 +1504,4 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 * GGPO rollback reference: <https://github.com/pond3r/ggpo>
 * Photon Quantum 3 (architecture reference for server-confirmed-input predict/rollback; no code used): <https://doc.photonengine.com/quantum/>
 * Luau: <https://luau.org/>
+* Model Context Protocol specification (2025-11-25): <https://modelcontextprotocol.io/specification/2025-11-25>

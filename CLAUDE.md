@@ -115,6 +115,18 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 - New graph nodes implement `IAnimNode` with both sim and presentation behavior (or declare themselves
   presentation-only). Foot IK may query the sim physics world **read-only**, during the presentation phase only.
 
+## MCP server (DESIGN.md §14.5)
+
+- `dg::mcp` is **editor-only**. It is never linked into players, Release, or headless server builds.
+- MCP tools call the **same editor services and command stack** as the UI. Every mutating tool is one undo transaction
+  (`MCP: <tool>`). Never write project files from a tool except through the asset/scene serializers, and never save a
+  level implicitly.
+- Tool input/output schemas are generated from reflected request/response structs. Don't hand-write JSON Schemas.
+  New editor features should add their tools through `IMcpToolProvider` in the same change.
+- No shell, process-spawning, or native-code execution tools. File access stays inside the project directory.
+  Destructive tools must require confirmation (elicitation or editor modal) and respect `.dg/mcp-policy.yaml`.
+- The protocol is pinned to MCP 2025-11-25. Revision differences belong only in the protocol adapter.
+
 ## Architecture rules
 
 - **Layering:** Core → Platform/RHI → Engine services → Simulation | Presentation → Gameplay framework → Editor/Apps.
