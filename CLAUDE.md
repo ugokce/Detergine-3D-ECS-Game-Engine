@@ -57,7 +57,7 @@ must follow these rules:
 Any change that touches sim code must pass the **determinism replay tests** on both x64 and ARM64. If you cannot
 run them locally on both architectures, say so explicitly in the PR/summary.
 
-## Multiplayer & headless (DESIGN.md §14, §15.1)
+## Multiplayer & headless (DESIGN.md §15, §16.1)
 
 - Multiplayer is **built in**: predict/rollback over **server-confirmed inputs**, served by the headless `dg-server`
   (Photon Quantum 3-style architecture, our own implementation). Server modes: `relay` (input authority plus a checksum
@@ -74,7 +74,7 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 - Changes to `InputCommand` schemas, the hash composition, or the snapshot format change the network protocol.
   Bump the protocol version and mention it in the commit message.
 
-## Particles / VFX (DESIGN.md §8.6, §13.2)
+## Particles / VFX (DESIGN.md §8.6, §14.2)
 
 - `dg::vfx` is **presentation-only**. It never reads input or writes sim state, it is excluded from state hashes and
   headless builds, and it seeds RNG from `hash(sim entity, spawn tick, event id)`.
@@ -87,7 +87,7 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 - No shader compiler in the player: runtime-authored effects use precompiled module kernels or the CPU path.
 - Effects spawned from predicted sim events must be cancellable on rollback.
 
-## Audio (DESIGN.md §9, §13.3)
+## Audio (DESIGN.md §9, §14.3)
 
 - `dg::audio` is **presentation-only**, like VFX. It is never in state hashes, it uses the Null device in headless
   builds, and gameplay never waits on audio (use sim timers).
@@ -99,6 +99,21 @@ run them locally on both architectures, say so explicitly in the PR/summary.
   Randomization is seeded from `hash(sim entity, tick, event id)`.
 - Occlusion queries use the cooked acoustic proxy BVH or Steam Audio's scene, **never the sim physics world**.
 - FMOD/Wwise are optional plugins behind `IAudioBackend`. Never add them as core dependencies.
+
+## Animation (DESIGN.md §10, §14.4)
+
+- Animation is split in two. **Sim animation** is `AnimSimState` (state IDs + integer tick times) reading **baked**
+  fixed-point root motion and socket tracks and tick-exact sim events. It has no blending math, it is hashed and
+  snapshotted, and it is the only part in headless builds. **Presented animation** is the ozz pose pipeline, IK, and
+  skinning. It is never hashed and is free to be non-deterministic.
+- Gameplay (hitboxes, root motion, cancel windows) must read sim tracks and sim events, **never presented poses**.
+  Sim graph transitions may only read sim parameters and events; the graph compiler enforces this.
+- The presented graph follows the sim state and hides corrections with inertialization. Don't add presentation-only
+  state that gameplay depends on.
+- Hot paths: ozz SoA jobs per character on the job system, frame-allocator pose buffers, no per-frame heap allocation
+  or virtual dispatch per node, and compute skinning once per frame shared by all passes (vertex skinning on mobile).
+- New graph nodes implement `IAnimNode` with both sim and presentation behavior (or declare themselves
+  presentation-only). Foot IK may query the sim physics world **read-only**, during the presentation phase only.
 
 ## Architecture rules
 
@@ -138,7 +153,7 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 
 ## Build & test
 
-Use the `dg` tool (`./dg` on macOS/Linux, `dg` on Windows; DESIGN.md §15.2). It wraps the CMake presets.
+Use the `dg` tool (`./dg` on macOS/Linux, `dg` on Windows; DESIGN.md §16.2). It wraps the CMake presets.
 
 ```bash
 ./dg setup                    # check the toolchain (add --vcpkg to bootstrap vcpkg)

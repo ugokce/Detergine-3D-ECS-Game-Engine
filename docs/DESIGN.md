@@ -15,7 +15,7 @@ architecture. That property is what makes lockstep and rollback multiplayer "fre
 
 | Pillar | Meaning |
 |---|---|
-| Built-in multiplayer | Predict/rollback netcode, dedicated headless server, state hashing and automatic resync of desynced clients (§14). |
+| Built-in multiplayer | Predict/rollback netcode, dedicated headless server, state hashing and automatic resync of desynced clients (§15). |
 | Deterministic simulation | Fixed-tick ECS simulation, deterministic physics, deterministic Lua. Bit-identical on x64 and ARM64. |
 | Performance | Data-oriented C++23 core, archetype ECS, job system, bindless Vulkan renderer with render graph. |
 | Productivity | Unity-like editor (Hierarchy / Scene / Game / Inspector / Project / Console), prefabs, hot-reloaded Lua. |
@@ -121,12 +121,13 @@ nondeterminism in anything that touches the simulation.
 | glTF / GLB | **fastgltf** | MIT | C++17/20, SIMD JSON, very fast. |
 | FBX | **ufbx** | MIT / PD | Single-file, robust, no Autodesk SDK dependency. |
 | Other formats | **Assimp** (optional importer plugin) | BSD-3 | OBJ, DAE, etc. |
-| Animation | **ozz-animation** | MIT | Skeletal sampling/blending, compression. Sim-side gameplay never depends on sampled poses unless done in deterministic mode. |
+| Animation runtime | **ozz-animation** | MIT | SoA SIMD sampling, blending, IK, and local-to-model jobs, plus compression. Presentation-side poses; the sim uses baked tracks (§10.1). |
+| Animation compression (optional) | **ACL** (Animation Compression Library) | MIT | Alternative clip codec behind `IAnimCodec`, if it measures better than ozz's. |
 | Audio device / decode | **miniaudio** | PD / MIT-0 | Device IO (WASAPI, CoreAudio, AAudio), WAV/FLAC/MP3 decoding. Mixer, events, and spatializer are ours (§9). |
 | Spatial audio | **Steam Audio** | Apache-2.0 | HRTF binaural, occlusion/transmission, real-time and baked reflections, pathing. Windows/macOS/Android/iOS. |
 | Audio codecs | **libopus** (+ opusfile), **stb_vorbis** | BSD-3 / PD | Opus is the default cooked format; Vorbis for legacy imports. |
 | Audio middleware (optional) | FMOD / Wwise backends | proprietary (user-licensed) | Plugins only, behind `IAudioBackend`. Never a core dependency. |
-| UI layout | **Yoga** (flexbox) | MIT | Runtime UI layout engine (§11). |
+| UI layout | **Yoga** (flexbox) | MIT | Runtime UI layout engine (§12). |
 
 ### 2.7 Packaging & distribution
 
@@ -219,14 +220,14 @@ nondeterminism in anything that touches the simulation.
   render/                  dg::render – render graph, render world, passes, materials, GI, 2D
   ui/                      dg::ui    – runtime UI (retained, Yoga layout, MSDF text)
   audio/                   dg::audio – event runtime, mixer, spatializer, Steam Audio + miniaudio backends
-  anim/                    dg::anim  – ozz-animation integration, state machines
+  anim/                    dg::anim  – sim anim state + baked tracks, ozz runtime, anim graph, IK, GPU skinning
   vfx/                     dg::vfx   – particle graph IR, compiler, GPU/CPU runtimes
   scene/                   dg::scene – scenes, prefabs, transforms, hierarchy
   plugin/                  dg::plugin – module manager, plugin ABI
 /editor/                   dg::editor – ImGui editor app and tool panels
 /apps/player/              Shipping runtime host
 /apps/server/              Headless server/relay
-/dg, /dg.cmd               Developer tool launchers (macOS/Linux, Windows) → tools/dg.py (§15.2)
+/dg, /dg.cmd               Developer tool launchers (macOS/Linux, Windows) → tools/dg.py (§16.2)
 /CMakePresets.json         Configure/build/test presets per platform
 /tools/dg.py               Project generation, build, run, test, determinism check
 /tools/dg_launcher.py      Launcher GUI over dg.py (`dg gui`, Launcher.command / Launcher.bat)
@@ -300,7 +301,7 @@ struct DG_REFLECT(Sim) Health {
   ```
 * **Plugin = package** of modules + assets + Lua scripts + a manifest `plugin.dgplugin` (YAML):
   name, version, engine version range, platforms, modules, dependencies, a `deterministic: true|false` flag, and a
-  `headless: true|false` flag (whether the plugin is linked into headless server builds, §15.1).
+  `headless: true|false` flag (whether the plugin is linked into headless server builds, §16.1).
 * Load modes:
   * **Editor / development**: dynamic libraries (`.dll` / `.dylib`) with a C-ABI entry point
     `extern "C" DG_PLUGIN_API dg::PluginInterface* dgCreatePlugin(dg::EngineContext*)`. C++ hot reload is supported for
@@ -550,7 +551,7 @@ probes (the "Lumen-style" path); Phase D — hardware RT path.
 
 A GPU-driven particle system in the class of Niagara and Unity VFX Graph, with a SIMD CPU path for mobile and for
 effects that need CPU-side results. Effects are fully **serialized assets**, authored in the built-in Particle Editor
-(§13.2).
+(§14.2).
 
 **Data model — one IR, two authoring views**
 
@@ -619,7 +620,7 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 * **Visual consistency across clients**: each effect instance is seeded deterministically from
   `hash(sim entity, spawn tick, event id)`, so all players see the "same" effect (best-effort — GPU float results are
   not bit-guaranteed).
-* **Rollback-safe**: effects triggered by *predicted* sim events (§14.8) are spawned as tentative. If the event is
+* **Rollback-safe**: effects triggered by *predicted* sim events (§15.8) are spawned as tentative. If the event is
   cancelled after a rollback, the effect is killed or faded; if confirmed, it continues untouched.
   Gameplay-relevant "particles" (bullets, debris that matters) must be sim entities, not VFX.
 
@@ -628,7 +629,7 @@ effects that need CPU-side results. Effects are fully **serialized assets**, aut
 * `VfxEffect` presentation component (asset GUID, exposed-parameter overrides, autoplay, attach-to-socket).
 * `dg.vfx.play(effect, { position = ..., params = { Color = ... } })` from view Luau and C++.
   Exposed parameters can be bound to reflected component fields.
-* Effects can live on prefabs. Overrides of exposed parameters use the normal prefab override path (§11).
+* Effects can live on prefabs. Overrides of exposed parameters use the normal prefab override path (§12).
 
 ## 9. 3D Audio System (`dg::audio`)
 
@@ -738,8 +739,8 @@ parameters use normal prefab overrides.
 ### 9.6 Relationship to the simulation & networking
 
 * Audio is **presentation-only**. It is not in state hashes. Headless builds link a **Null audio device** and the cook
-  strips audio assets (§15.1).
-* **Rollback-safe playback** (§14.8): a sound triggered by a *predicted* sim event **starts immediately**, because
+  strips audio assets (§16.1).
+* **Rollback-safe playback** (§15.8): a sound triggered by a *predicted* sim event **starts immediately**, because
   latency matters more than correctness for audio. It is tagged with the event's ID. If a rollback **cancels** the event,
   the sound **fades out quickly** (about 30–80 ms, configurable per event). If the event is **confirmed**, nothing happens.
   If re-simulation raises the same event again (same ID), it is **deduplicated**, not replayed.
@@ -773,9 +774,141 @@ return dg.view_system {
 * Exposed parameters can be **bound to reflected component fields** (e.g. engine RPM → `Rpm` parameter), and they are
   updated once per frame from the presentation world.
 
+## 10. Skeletal Animation System (`dg::anim`)
+
+A data-oriented skeletal animation runtime built on **ozz-animation** (SoA SIMD sampling, blending, IK, and
+local-to-model jobs), with our own animation graph, deterministic sim-side animation data, GPU skinning, and LOD and
+budgeting for large character counts. It is authored and inspected in the Animation Viewer (§14.4).
+
+### 10.1 Sim animation vs. presented animation
+
+Gameplay often depends on animation: attack windows, hitbox positions, root motion, "can cancel after frame 12".
+Full pose evaluation with float blending is too expensive to run in the sim and roll back, so animation is split in two:
+
+| | **Sim animation** (deterministic, §5) | **Presented animation** (presentation layer) |
+|---|---|---|
+| Runs | Every sim tick, inside the sim world; rolled back and resimulated | Every rendered frame, after the sim tick |
+| State | `AnimSimState` component: graph state IDs, state time in **ticks** (integer), and the transition in progress, all of it hashed and snapshotted | Full pose buffers, blend weights, IK results, inertialization offsets; never hashed |
+| Data | **Baked sim tracks** (cook time): root motion and selected gameplay bones (hitbox sockets, weapon tip) at the sim tick rate, in fixed-point; tick-exact **sim events** (hit frames, cancel windows) | Compressed ozz clips at full rate, plus curves, morph targets, and IK |
+| Cost | Table lookups only, no blending math, so it is cheap to resimulate 8+ ticks | SIMD jobs on the job system, with LOD and budgets |
+| Output | Root motion → movement, socket transforms → hit queries, events → gameplay | Skinning matrices for the GPU, plus cosmetic notifies (footsteps → audio §9, VFX §8.6) |
+
+* The presented graph **follows** the sim graph: it is driven by the same state IDs and times, and only adds what is
+  cosmetic (blends, IK, layers that don't affect gameplay). When a rollback or resync (§15.5) changes the sim state, the
+  presented pose catches up using **inertialization** instead of popping.
+* Games that need **no** animation-driven gameplay can skip the sim side entirely (`AnimSimState` is optional).
+* Headless builds (§16.1) contain only the sim side: baked tracks and sim events, and no ozz clips or skinning.
+
+### 10.2 Assets & import pipeline
+
+| Asset | Contents |
+|---|---|
+| **Skeleton** (`.dgskel`) | Joint hierarchy, bind pose, joint names and stable IDs, an optional **humanoid rig definition** (Unity-Avatar-like bone mapping for retargeting), and per-joint LOD levels. |
+| **AnimationClip** (`.dgclip`) | ozz compressed tracks (translation/rotation/scale; per-joint error tolerance), float curves (e.g. `FootPlant`, `WeaponTrail`), the morph-target weight track, additive flag + reference pose, **events/notifies** (presentation and sim), and the **baked sim tracks** (§10.1). |
+| **AnimGraph** (`.dganimgraph`, YAML) | State machines, blend trees, layers, parameters, and the sim/presentation split per node (§10.4). |
+| **BlendSpace** (1D/2D) | Sample clips placed on parameter axes (e.g. speed × direction), with triangulated 2D interpolation. |
+| **AvatarMask** | A per-joint weight mask for layers (upper body, face, additive aim). |
+| **RetargetProfile** | Source → target rig mapping, with per-chain scale and translation modes. |
+
+* **Import**: FBX via **ufbx** and glTF/GLB via **fastgltf** (§2.6) produce skeleton, skinned mesh (up to 8 influences,
+  normalized and quantized), clips, and morph targets. Unit and axis conversion happens at import time.
+* **Compression**: ozz keyframe reduction with per-joint tolerances derived from joint chain length (error is measured at
+  a virtual vertex distance, so fingers can be loose and hips strict). The codec sits behind `IAnimCodec`, so
+  **ACL** (Animation Compression Library, MIT) can be used as an alternative if it measures better.
+* **Retargeting** is baked at import time (cheap at runtime) or done live for previews and runtime-assembled characters.
+* **Clip streaming**: large clip sets (cinematics) stream in by asset handle. The working set has a memory budget per
+  platform tier.
+
+### 10.3 Runtime pipeline (per frame)
+
+```
+ sim tick:   AnimSimState advance → root motion + sim events + socket lookups   (deterministic, tiny)
+                                       │ (read-only)
+ frame:      Graph update (params from components/Luau, follow sim state)
+             → Sampling jobs (ozz SamplingJob, per active clip, SoA SIMD)
+             → Blending jobs (layers, masks, additive)  → Inertialization
+             → Local-to-model (ozz LocalToModelJob)       → Procedural: IK / look-at / foot placement
+             → Skinning matrices (model × inverse bind) → upload to the GPU bone buffer (bindless)
+             → GPU skinning (compute)  → skinned vertex cache used by all passes
+```
+
+* **Parallelism**: one job chain per character, scheduled on the job system (§4.4), with no locks. Character ordering
+  is irrelevant because the presentation side is not deterministic.
+* **Memory**: pose buffers come from per-frame linear allocators. Clips and skeletons are shared and immutable, so there
+  are no per-frame heap allocations.
+* **Procedural layer**: two-bone IK (limbs), FABRIK/CCD chains (tails, spines), aim and look-at with limits, and **foot
+  placement** (ground raycasts with pelvis adjustment and foot-plant curves). Raycasts are **read-only queries against
+  the sim physics world** during the presentation phase, which runs after the sim step and never concurrently with it.
+* **Root motion**: the sim uses the baked track. The presented pose removes root translation and rotation so the
+  character doesn't double-move.
+* **Physics-driven**: cosmetic **ragdolls** and partial ragdolls (hit reactions) use a separate *presentation* Jolt
+  world, with pose matching for get-up blends. Gameplay-relevant ragdolls (rare) must be sim entities in the sim physics
+  world.
+
+### 10.4 Animation graph
+
+* **State machines** (nested), with transitions on conditions (parameters, sim events, end of state, sync markers),
+  configurable blend curves, and interrupt rules.
+* **Blend nodes**: 1D and 2D blend spaces, additive, layered with masks, and select/switch by parameter or enum.
+* **Sync groups and markers**: foot-sync markers keep walk/run/sprint cycles phase-aligned while blending.
+* **Inertialization**: transitions can use inertial blending (evaluate only the target pose and decay the offset from the
+  source pose) instead of crossfading two full poses. This is cheaper, looks better for responsive gameplay, and is what
+  hides rollback and resync corrections.
+* **Parameters** come from reflected component fields (bindings) or are set from view Luau scripts / C++. Sim-side
+  transitions may only read **sim** parameters and sim events, which is enforced when the graph is compiled.
+* The graph compiles at cook time into a flat, data-oriented program: node arrays, no per-frame virtual dispatch.
+  The sim portion is compiled into a separate deterministic table that headless builds can load.
+* **Montages/slots**: one-shot actions (attacks, emotes) are played into named slots with blend-in/out, and can be
+  triggered from sim events so they stay rollback-consistent.
+
+### 10.5 GPU skinning & deformation
+
+* **Compute pre-skinning** (desktop default): a compute pass skins each visible skinned mesh once per frame into a
+  **skinned vertex cache**. Depth, G-buffer, shadow, and motion-vector passes all read the cache, which also keeps the
+  previous frame's positions for motion vectors and TAA. This works with the GPU-driven meshlet path (§8.3).
+* **Linear blend skinning** by default, with optional **dual-quaternion skinning** per mesh (it avoids candy-wrapper
+  artifacts on twisting joints).
+* **Morph targets / blend shapes**: sparse delta buffers applied in the same compute pass. Weights come from clip
+  tracks and from code (facial animation, correctives).
+* **Mobile tier**: vertex-shader skinning (4 influences, half-precision matrices), so no extra pass or bandwidth is
+  spent. Morph targets are limited per mesh.
+* **Crowds**: **vertex animation textures / baked animation instancing** for hundreds or thousands of distant characters
+  (GPU-sampled, no CPU pose), with automatic switching from full skeletal near the camera.
+
+### 10.6 Performance: LOD & budgets
+
+* **Update-rate LOD**: near characters update every frame. Mid-distance ones update every 2–4 frames and interpolate.
+  Far ones use a crowd/VAT representation. Off-screen ones update only what gameplay or audio needs (root, notifies).
+* **Joint LOD**: per-skeleton joint sets per LOD (fingers and face drop first), and fewer IK solvers at distance.
+* **Significance manager** (shared with VFX §8.6): ranks characters by screen size, distance, and gameplay importance
+  (player, target) under a per-platform **animation CPU budget**.
+* **Profiling**: per-character evaluation cost, sampled clip count, compute skinning time, and bone buffer size, shown in
+  Tracy, the editor profiler, and the Animation Viewer stats (§14.4).
+
+### 10.7 Events, notifies & integration
+
+* **Sim events** (baked, tick-exact): `HitWindowBegin/End`, `CanCancel`, `SpawnProjectile`… They are raised inside the
+  sim and are deterministic and rollback-safe by construction.
+* **Presentation notifies**: footsteps, cloth/foley sounds, VFX bursts, camera shakes. They fire from the presented
+  timeline and use the predicted-event rules (§15.8) when they originate from sim events.
+* **ECS components**: `Skeleton` (asset + pose handle), `SkinnedMesh`, `Animator` (graph asset + parameters),
+  `AnimSimState` (sim), `IKTarget`, `Ragdoll`, and `Socket` attachments (props and weapons follow joints).
+* **Luau** (view scripts):
+
+```lua
+--!strict
+local Locomotion = dg.anim.param("Speed")
+return dg.view_system {
+    query = { dg.component("Animator"), dg.component("Velocity") },
+    update = function(view, e, animator, velocity)
+        animator:set(Locomotion, dg.math.length(velocity.value))
+    end,
+}
+```
+
 ---
 
-## 10. Asset Pipeline
+## 11. Asset Pipeline
 
 * **Asset database** (editor): every source file in `Assets/` has a sidecar **`.meta`** file (YAML) holding a stable
   **GUID**, importer type and version, and import settings, like Unity. Moving or renaming a file keeps its GUID.
@@ -792,7 +925,7 @@ return dg.view_system {
 
 ---
 
-## 11. Scene, Prefabs & Runtime Objects
+## 12. Scene, Prefabs & Runtime Objects
 
 * **Scene** = a serialized set of entities (YAML in the editor, binary when cooked). Multiple scenes can be loaded
   additively.
@@ -810,7 +943,7 @@ return dg.view_system {
 
 ---
 
-## 12. Runtime UI System (`dg::ui`) & UI Designer
+## 13. Runtime UI System (`dg::ui`) & UI Designer
 
 * **Retained-mode, ECS-backed UI**: UI elements are entities with `RectTransform` (Unity-like anchors, pivot, offsets)
   and an optional **Yoga flexbox** layout container (`FlexLayout`), which gives responsive layouts.
@@ -831,7 +964,7 @@ return dg.view_system {
 
 ---
 
-## 13. Editor (Unity-like)
+## 14. Editor (Unity-like)
 
 Built with Dear ImGui (docking + multi-viewport), plus ImGuizmo, ImPlot, and imgui-node-editor. A custom theme
 closely matches Unity's dark/light skins.
@@ -845,17 +978,17 @@ closely matches Unity's dark/light skins.
 | **Project** | Asset browser over `Assets/` with thumbnails, search/filter by type/label, drag-and-drop into the scene, import settings in the Inspector. |
 | **Console** | Logs with filters, collapse, and source jump; Lua errors with stack traces. |
 | **Profiler** | Integrated Tracy client view plus engine counters (sim tick ms, rollback count, GPU passes). |
-| **Animation / Animator** | Timeline and state-machine graph editor (imgui-node-editor). |
-| **UI Designer** | See §12. |
-| **Particle Editor** | See §13.2. |
-| **Audio Mixer / Sound Event Editor** | See §13.3. |
+| **Animation Viewer / Anim Graph** | See §14.4. |
+| **UI Designer** | See §13. |
+| **Particle Editor** | See §14.2. |
+| **Audio Mixer / Sound Event Editor** | See §14.3. |
 | **Network Debugger** | Ping/jitter/rollback visualizer, per-tick checksum timeline, desync diff viewer. |
 | **Build Settings** | Scene list, platform targets (Windows/macOS/Android), quality tiers, Build / Build & Run. |
 
 **Editor infrastructure**: an undo/redo command stack (reflection-based property diff commands), selection service,
 editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails cache, and the editor scripting API.
 
-### 13.1 Level design / world-building tools
+### 14.1 Level design / world-building tools
 
 * **Terrain**: heightmap tiles (clipmap rendering), sculpt/smooth/flatten/stamp brushes, splat-map texture painting,
   holes, and a deterministic collision heightfield (Jolt `HeightFieldShape`).
@@ -867,7 +1000,7 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 * **Navigation**: navmesh baking with **Recast/Detour** (Zlib), using deterministic pathfinding queries in the sim.
 * **Lighting tools**: light probe and reflection probe placement, lightmap baking, and GI debug visualizers.
 
-### 13.2 Particle Editor (built-in)
+### 14.2 Particle Editor (built-in)
 
 A dedicated, dockable **Particle Editor** window opens when you double-click a `*.dgvfx` asset. It edits the graph IR
 from §8.6.
@@ -895,7 +1028,7 @@ from §8.6.
 * **Extensible**: plugins add modules (`IVfxModule`: graph definition + Slang snippet + CPU bytecode implementation),
   renderers (`IVfxRenderer`), and editor drawers.
 
-### 13.3 Audio tools (built-in)
+### 14.3 Audio tools (built-in)
 
 | Tool | Function |
 |---|---|
@@ -908,16 +1041,50 @@ from §8.6.
 | **Acoustics baking** | Paint or assign acoustic materials, place reflection/pathing probes, and bake Steam Audio reflections and pathing per level (stored as level-scoped derived data). |
 | **Audio Debugger** | Live list of event instances (real/virtual, audibility, bus, position), occlusion rays drawn in the Scene View, a per-emitter "why is this not audible?" readout, voice/CPU budget graphs per platform tier, and a rollback trace showing cancelled and deduplicated sounds. |
 
+### 14.4 Animation Viewer & animation tools (built-in)
+
+The **Animation Viewer** opens when you double-click a skeleton, skinned mesh, clip, blend space, or anim graph. It is a
+dockable editor window, and it can also run standalone (`dg-editor --anim-viewer <asset>`) for animators who only need
+to review content.
+
+| Area | Function |
+|---|---|
+| **Viewport** | Isolated preview scene: orbit/fly camera, lighting presets, ground grid, floor shadow, and background options. Mesh / skeleton / both display modes. Bone drawing (octahedral, lines, axes, names), selection of joints by clicking. |
+| **Playback & timeline** | Play/pause, step by frame **and by sim tick**, scrub, loop/ping-pong, speed 0.05×–4×, range selection, and frame/time/tick display. Timeline tracks for events and notifies (drag to move, add from a palette), float curves, morph weights, and **baked sim tracks** shown against the full-rate pose. |
+| **Clip & asset browser** | Clips for the current skeleton with search and tags, drag a clip into the viewport to preview it, and favorites. |
+| **Blend preview** | Pick two clips (or a blend space) and a blend weight, or drag a point on the 2D blend-space pad. Sync-marker alignment display, additive preview over a base pose. |
+| **Root motion** | Trajectory drawing (position and facing per tick), toggle for in-place vs. root-motion playback, and a comparison of the baked sim track vs. the evaluated root. |
+| **Compression inspector** | Raw vs. compressed size per clip, an error heatmap per joint, ghost overlay (source pose vs. compressed pose), and tolerance sliders with live recompression and size readout. |
+| **Skinning & mesh debug** | Bone-weight heatmap per selected joint, influence-count view, bind-pose check, dual-quaternion vs. linear comparison, morph target sliders. |
+| **IK & procedural preview** | Draggable IK targets, foot-placement preview on a slope or steps proxy, look-at target. |
+| **Retarget preview** | Play a clip on a different skeleton through a RetargetProfile, side by side with the source, with per-chain adjustment. |
+| **LOD preview** | Joint LOD and update-rate LOD at a simulated distance, and the crowd/VAT representation. |
+| **Stats** | Joint count, clip count, evaluation time, skinning time, memory, and per-platform-tier budget usage. |
+
+**Related tools**
+
+* **Anim Graph Editor** (imgui-node-editor): state machines, blend trees, layers, and parameters, with sim nodes visually
+  marked. Compile errors (e.g. a sim transition reading a presentation parameter) appear inline.
+* **Live Graph Debugger**: select a character in Play mode to see active states, transition progress, blend weights,
+  parameter values, and the last sim events. You can pause and scrub its recent history, and see when a rollback
+  corrected its sim animation state.
+* **Rig / Avatar editor**: humanoid bone mapping (auto-map by name, then manual fix), joint limits for IK and ragdolls,
+  and ragdoll body setup.
+* **Event authoring** validation flags sim events that fall between sim ticks (they snap to the nearest tick at cook
+  time) and notifies that have no handler.
+* Everything is undoable and saved as diff-friendly YAML. Plugins can add viewer panels (`IAnimViewerPanel`) and graph
+  nodes (`IAnimNode`, with sim and presentation implementations).
+
 ---
 
-## 14. Built-in Deterministic Multiplayer Backend (`dg::net`)
+## 15. Built-in Deterministic Multiplayer Backend (`dg::net`)
 
 The engine ships a complete, **built-in** deterministic netcode stack: the client library, a dedicated session server,
 and the tooling. A game gets multiplayer by defining `InputCommand` and writing sim systems; it never writes
 networking code. The model is **predict/rollback with server-confirmed inputs**, the same family of architecture as
 Photon Quantum 3. That is a design reference only; the implementation is our own.
 
-### 14.1 Topology & roles
+### 15.1 Topology & roles
 
 ```
                       ┌──────────────────────────────────────────────────┐
@@ -935,8 +1102,8 @@ Photon Quantum 3. That is a design reference only; the implementation is our own
 |---|---|
 | **Client** | Samples local input → sends `InputCommand` for tick `T + inputOffset`. Runs **predicted** ticks with guessed remote inputs. On receiving confirmed inputs, it **rolls back** to the last verified tick and re-simulates. Sends checksums of verified ticks. |
 | **Server — input authority** (always on) | Owns the session clock. Collects inputs per tick until a **deadline**, substitutes a default or repeated input for any late or missing player, and broadcasts the **confirmed input set** for that tick. A late input is never "re-opened": the server's set is final, so every client agrees on history. |
-| **Server — checksum validator** (always on) | Compares per-tick checksums sent by clients (§14.4) and triggers resync (§14.5). |
-| **Server — authoritative simulation** (optional, `mode=verify`) | Runs the **same sim** headlessly on the room's level (§15.1), using only confirmed inputs. It never predicts and never rolls back. It is the ground truth for checksums, snapshots, late joins, and anti-cheat. |
+| **Server — checksum validator** (always on) | Compares per-tick checksums sent by clients (§15.4) and triggers resync (§15.5). |
+| **Server — authoritative simulation** (optional, `mode=verify`) | Runs the **same sim** headlessly on the room's level (§16.1), using only confirmed inputs. It never predicts and never rolls back. It is the ground truth for checksums, snapshots, late joins, and anti-cheat. |
 
 Two server modes:
 
@@ -948,7 +1115,7 @@ Two server modes:
 
 Peer-hosted sessions (one client also runs the server room in-process) use the same code path, for LAN and dev.
 
-### 14.2 Ticks, frames and time synchronization
+### 15.2 Ticks, frames and time synchronization
 
 * **Verified tick**: every input for it is confirmed by the server. The state is final and identical everywhere.
 * **Predicted tick**: simulated ahead of the last verified tick using predicted remote inputs. It is rolled back when
@@ -960,7 +1127,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * The **max prediction window** (e.g. 10 ticks) is configurable. Beyond it, the client stalls its sim, rather than
   diverging further.
 
-### 14.3 Input pipeline
+### 15.3 Input pipeline
 
 * `InputCommand` is a reflected struct (`DG_REFLECT(Input)`). It is bit-packed via reflection, with delta-compression
   against the previous tick.
@@ -973,7 +1140,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * **Predicting remote inputs**: by default repeat the last confirmed input. Games can override this per input field
   (e.g. reset "fire" to false).
 
-### 14.4 State hashing (desync detection)
+### 15.4 State hashing (desync detection)
 
 * **What is hashed**: all `Sim`-tagged components, walked via reflection in canonical entity/archetype order, plus the
   entity allocator state, the sim RNG, the physics state hash (Jolt/Box2D), the tick number, and registered sim
@@ -985,7 +1152,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * On mismatch, the server can request the **hash tree** from the divergent client. Comparing it with the reference tree
   pinpoints the exact component type and entity range that diverged, and this goes into the desync report.
 
-### 14.5 Resync of desynced clients
+### 15.5 Resync of desynced clients
 
 ```
  client X hash(T) ≠ reference hash(T)
@@ -1017,22 +1184,22 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
   majority vote until it resyncs successfully.
 * The **same path serves late join and reconnect**: a joining client is simply a client whose state is "missing" at T.
 
-### 14.6 Session lifecycle & compatibility
+### 15.6 Session lifecycle & compatibility
 
 1. Client connects → **handshake** with the determinism manifest: engine build hash, sim-module/plugin hashes,
    sim-asset content hash for the room's level, tick rate, and `InputCommand` schema hash. Any mismatch is rejected
    with a clear error.
 2. Room start: the server broadcasts the start tick, initial RNG seed, and player slots. All peers load the level and
    start from identical state.
-3. Running: the input/confirm loop (§14.2–13.3), checksums (§14.4), and resync on demand (§14.5).
+3. Running: the input/confirm loop (§15.2–13.3), checksums (§15.4), and resync on demand (§15.5).
 4. End: the server optionally stores a **replay** (initial snapshot + confirmed inputs). This is compact, and can be
    re-simulated by any headless build for verification, spectating, or bug repro.
 
-### 14.7 Server architecture (`dg-server`)
+### 15.7 Server architecture (`dg-server`)
 
 * **One process, many rooms**. Each room runs on a job-system worker, with a fixed tick timer per room.
 * Room capacity and modes (`relay` vs `verify`) are set by room config. In `verify` mode a room loads its level
-  through the headless asset path (§15.1).
+  through the headless asset path (§16.1).
 * **Management API** (HTTP/JSON, plugin-replaceable): create/list/close rooms, health, metrics (Prometheus format),
   and replay download.
 * **Matchmaking/lobby** is out of the core. It is a plugin interface (`ILobbyService`) with a simple built-in room
@@ -1040,7 +1207,7 @@ Peer-hosted sessions (one client also runs the server room in-process) use the s
 * **Transport** is behind `ITransport`: ENet (default, UDP), GameNetworkingSockets (encryption, relays), and a WebSocket
   fallback (later). Channels: unreliable-sequenced (inputs), reliable-ordered (commands, snapshots, control).
 
-### 14.8 Client API surface (C++ and Luau)
+### 15.8 Client API surface (C++ and Luau)
 
 ```lua
 -- view-side Luau (presentation): connecting and status
@@ -1055,14 +1222,14 @@ Presentation helpers: `IsPredicted(entity)`, a "verified vs predicted" interpola
 **rollback-safe events** (sim events raised on predicted ticks are delivered to the presentation layer with
 `predicted=true`, then confirmed or cancelled, so a sound or VFX plays once and isn't duplicated on resimulation).
 
-### 14.9 Non-deterministic replication (optional plugin)
+### 15.9 Non-deterministic replication (optional plugin)
 
 State replication (server-authoritative snapshots + interpolation) for games that don't fit lockstep, such as MMO-scale
 worlds. It is not the default and is not covered by the determinism guarantees.
 
 ---
 
-## 15. Build Configurations & Packaging
+## 16. Build Configurations & Packaging
 
 | Config | Asserts | Optimizations | Tracy | Editor | Notes |
 |---|---|---|---|---|---|
@@ -1070,7 +1237,7 @@ worlds. It is not the default and is not covered by the determinism guarantees.
 | `Development` | ✅ | ✅ | ✅ | ✅ | Default daily config. |
 | `Profile` (planned) | minimal | ✅ | ✅ | ❌ | Player only. |
 | `Release` (= Shipping) | ❌ | ✅ (+LTO) | ❌ | ❌ | Static plugins, stripped symbols, cooked paks only. |
-| `Server` profile (`DG_HEADLESS`, any config) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§15.1). |
+| `Server` profile (`DG_HEADLESS`, any config) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§16.1). |
 
 * **The determinism compile flags are identical in all configs** for sim translation units (`dg_sim_target()` CMake
   helper). This means Debug and Shipping builds can play together.
@@ -1084,17 +1251,17 @@ worlds. It is not the default and is not covered by the determinism guarantees.
   (build + emulator tests), and `linux-x64` (headless server, tools). Determinism replay jobs run across all of them,
   **including the headless server build** (§5.4).
 
-### 15.1 Headless build mode (per-level)
+### 16.1 Headless build mode (per-level)
 
-A **headless build** is the simulation without presentation. It produces dedicated servers (`verify` rooms, §14.1),
+A **headless build** is the simulation without presentation. It produces dedicated servers (`verify` rooms, §15.1),
 bots, replay verifiers, and CI determinism runners — all **for a specified set of levels**.
 
 **Compile-time profile (`DG_HEADLESS=1`)**
 
 * Linked: core, platform (no window), reflection/serialization, jobs, ECS, sim, physics, Luau (sim scripts only), net,
   asset runtime, plugin manager, and plugins marked `deterministic: true` or `headless: true`.
-* **Excluded**: RHI/renderer, GI, particles/VFX (`*.dgvfx` stripped by the cook), UI, audio, animation pose evaluation (unless a sim system needs it in deterministic
-  mode), ImGui, editor, and all `*.view.luau` scripts. A **Null RHI / Null audio** backend satisfies any optional
+* **Excluded**: RHI/renderer, GI, particles/VFX (`*.dgvfx` stripped by the cook), UI, audio, presented animation (ozz clips, skinning; the sim's baked
+  anim tracks and events stay, §10.1), ImGui, editor, and all `*.view.luau` scripts. A **Null RHI / Null audio** backend satisfies any optional
   references, so gameplay modules don't need `#if`s.
 * The sim translation units are built with **the exact same `dg_sim_target()` flags** as the clients. The headless
   binary is part of the determinism contract (x64 and ARM64; Linux, Windows, and macOS).
@@ -1108,7 +1275,7 @@ bots, replay verifiers, and CI determinism runners — all **for a specified set
   view-only components on prefabs. It keeps collision shapes, navmesh, data tables, sim scripts (Luau bytecode),
   sim components, and prefabs.
 * The output is a small `server.dgpak` and a **sim-asset manifest hash per level**. That hash is the one clients send in
-  the handshake (§14.6), so a server can only host levels whose sim content matches the clients' builds.
+  the handshake (§15.6), so a server can only host levels whose sim content matches the clients' builds.
 
 **Packaging**
 
@@ -1129,9 +1296,9 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 ```
 
 * The editor can launch a **local headless server** in-process or as a child process for multiplayer play-mode testing
-  (Game View with N simulated clients, §13).
+  (Game View with N simulated clients, §14).
 
-### 15.2 Developer workflow (project generation, build & run)
+### 16.2 Developer workflow (project generation, build & run)
 
 The canonical build description is **CMake presets** (`CMakePresets.json`). `dg` is a thin, dependency-free Python 3.9+
 tool on top of them, so that the same few commands work on every host:
@@ -1174,7 +1341,7 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 
 ---
 
-## 16. Roadmap (phased)
+## 17. Roadmap (phased)
 
 | Phase | Deliverables |
 |---|---|
@@ -1184,8 +1351,9 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 | **3 — Scripting & physics** | Luau sandbox, binding generator, `dg.d.luau`, Jolt + Box2D deterministic integration, hot reload. |
 | **4 — Editor MVP** | Docking layout, Hierarchy/Inspector/Scene/Game/Project/Console, gizmos, undo/redo, play mode, scenes, prefabs (+ overrides). |
 | **5 — Networking** | Headless build profile + level-scoped cook, `dg-server` (relay → verify mode), confirmed-input protocol, predict/rollback, hierarchical state hashing, snapshot resync / late join, network debugger panel. |
-| **6 — Content** | FBX (ufbx), animation (ozz), 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
-| **6a — Audio** | Audio thread + miniaudio backend, clips/Opus cooking, SoundEvents + containers, attenuation, bus mixer + snapshots, virtual voices, rollback-safe playback; then Steam Audio HRTF/occlusion, reverb zones, baked acoustics, music system, and the audio editor tools (§13.3). |
+| **6 — Content** | FBX (ufbx), 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
+| **6c — Animation** | Skeleton/clip import (ufbx, fastgltf), ozz runtime jobs, compute skinning (+ mobile vertex skinning), anim graph (state machines, blend spaces, layers, inertialization), sim anim state with baked tracks and sim events, IK and foot placement, update-rate and joint LOD, Animation Viewer, then the graph editor/debugger, retargeting, morph targets, ragdolls, and crowd VAT. |
+| **6a — Audio** | Audio thread + miniaudio backend, clips/Opus cooking, SoundEvents + containers, attenuation, bus mixer + snapshots, virtual voices, rollback-safe playback; then Steam Audio HRTF/occlusion, reverb zones, baked acoustics, music system, and the audio editor tools (§14.3). |
 | **6b — VFX** | Particle graph IR + YAML serialization, module-stack editor, CPU SIMD runtime → GPU fused-kernel runtime, sprites/ribbons/meshes, sorting, depth/SDF collision, node-graph view, flipbooks, budgets/LOD, profiler integration. |
 | **7 — Packaging** | `dg-cook`, `.dgpak`, `dg-package` for Windows/macOS/Android, Build Settings window. |
 | **8 — Advanced rendering** | Shadows, post-FX, baked GI → DDGI → Lumen-style SDF/surface-cache GI → HW RT path; mobile tier tuning. |
@@ -1194,7 +1362,7 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 
 ---
 
-## 17. Key Risks & Open Questions
+## 18. Key Risks & Open Questions
 
 | Risk | Mitigation |
 |---|---|
@@ -1206,6 +1374,7 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 | Rollback cost with heavy physics | Configurable rollback window; lockstep mode; physics LOD for sim entities; profile on Android early. |
 | GPU particle cost on mobile/TBDR (overdraw, bandwidth) | CPU SIMD path, trimmed sprite geometry, budgets per tier, low-resolution translucency, profiling on Android from the start of phase 6b. |
 | Audio glitches from priority inversion or allocation on the audio thread | Real-time-safe rules (no locks/allocations/IO on the audio thread), lock-free queues, an underrun counter in CI soak tests, and Android low-latency testing on real devices. |
+| Sim/presentation animation mismatch (a hitbox from the baked track vs. what the player sees) | Same source clip and sample times; the viewer overlays sim tracks on the presented pose; tolerance tests in CI; inertialization hides corrections instead of popping. |
 | Lumen-style GI complexity | Phased tiers; baked/DDGI first; time-boxed research spikes; AMD MIT references. |
 | Scope (an engine of Unity+UE breadth) | Strict phase gating; every module behind interfaces so features can be delayed without refactors. |
 
@@ -1219,7 +1388,7 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 
 ---
 
-## 18. References
+## 19. References
 
 * Lumen — SIGGRAPH 2022 Advances: <https://advances.realtimerendering.com/s2022/SIGGRAPH2022-Advances-Lumen-Wright%20et%20al.pdf>
 * Lumen overview (Epic tech blog): <https://www.unrealengine.com/en-US/tech-blog/unreal-engine-5-goes-all-in-on-dynamic-global-illumination-with-lumen>
