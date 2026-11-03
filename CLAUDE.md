@@ -16,6 +16,7 @@ Architectural decisions go into `docs/adr/NNNN-title.md`. Update `DESIGN.md` whe
 | macOS 14+ | ARM64 (Apple Silicon), native | yes | yes | Vulkan via MoltenVK / KosmicKrisp |
 | Android 10+ | ARM64 | no | yes | Vulkan 1.1+ |
 | iOS | ARM64 | no | later | Vulkan via MoltenVK |
+| Linux / Windows / macOS | x64 / ARM64 | no | **headless server** | none (Null RHI) |
 
 Every change must build on **Windows x64 and macOS ARM64**. Runtime modules must also build for **Android ARM64**.
 Never add platform-specific code outside `engine/platform/` (or `#if` blocks in clearly marked backend files).
@@ -50,8 +51,28 @@ must follow these rules:
 10. **Lua sim scripts:** no globals/upvalue state, no `pairs`/`next` over hash tables (use `dg.ordered` / `ipairs`),
     no `os`/`io`/`debug`/`collectgarbage`/`__gc`/weak tables, and use `dg.rng` and `dg.math` only.
 
+11. **Sim code must build and run headless** (`DG_HEADLESS=1`, no renderer/audio/UI). Sim systems must never reference
+    presentation modules, even optionally.
+
 Any change that touches sim code must pass the **determinism replay tests** on both x64 and ARM64. If you cannot
 run them locally on both architectures, say so explicitly in the PR/summary.
+
+## Multiplayer & headless (DESIGN.md §13, §14.1)
+
+- Multiplayer is **built in**: predict/rollback over **server-confirmed inputs**, served by the headless `dg-server`
+  (Photon Quantum 3-style architecture, our own implementation). Server modes: `relay` (input authority plus a checksum
+  majority vote) or `verify` (the server also runs the authoritative headless sim).
+- Desync handling: the hash of each verified tick is compared (hierarchical per-chunk hashes). On a mismatch, the server
+  sends a snapshot to the desynced client, which restores it and fast-forwards through the confirmed inputs. Late join
+  and reconnect use the same path.
+- Gameplay code never touches networking. Sim code sees only `world:input(slot)`. Anything that must survive rollback or
+  resync must be sim state (rule 6).
+- Presentation reacting to sim events must handle `predicted` events (confirm/cancel) so that rollback doesn't duplicate
+  sounds or VFX.
+- Headless server builds are **level-scoped**: `dg-cook --profile headless --levels ...` strips presentation assets.
+  Plugins declare `headless: true|false` in `plugin.dgplugin`.
+- Changes to `InputCommand` schemas, the hash composition, or the snapshot format change the network protocol.
+  Bump the protocol version and mention it in the commit message.
 
 ## Architecture rules
 

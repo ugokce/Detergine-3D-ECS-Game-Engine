@@ -15,6 +15,7 @@ architecture. That property is what makes lockstep and rollback multiplayer "fre
 
 | Pillar | Meaning |
 |---|---|
+| Built-in multiplayer | Predict/rollback netcode, dedicated headless server, state hashing and automatic resync of desynced clients (§13). |
 | Deterministic simulation | Fixed-tick ECS simulation, deterministic physics, deterministic Lua. Bit-identical on x64 and ARM64. |
 | Performance | Data-oriented C++23 core, archetype ECS, job system, bindless Vulkan renderer with render graph. |
 | Productivity | Unity-like editor (Hierarchy / Scene / Game / Inspector / Project / Console), prefabs, hot-reloaded Lua. |
@@ -30,7 +31,7 @@ architecture. That property is what makes lockstep and rollback multiplayer "fre
 | macOS 14+ | ARM64 (Apple Silicon) | ✅ | ✅ | Vulkan 1.3 via MoltenVK (Vulkan SDK) or KosmicKrisp → Metal | Apple Clang / upstream LLVM |
 | Android 10+ | ARM64-v8a | ❌ | ✅ | Vulkan 1.1+ (1.3 where available), Android Baseline profile | NDK Clang |
 | iOS | ARM64 | ❌ | 🔜 later | Vulkan via MoltenVK → Metal | Apple Clang |
-| Linux | x64 | best-effort | best-effort (dedicated servers) | Vulkan native | Clang/GCC |
+| Linux | x64 | best-effort | **headless server** ✅ (client best-effort) | none (headless) / Vulkan | Clang |
 
 **Cross-architecture determinism (x64 ↔ ARM64) is a hard requirement from day one**, because Windows
 (x64) players must be able to play against macOS and Android (ARM64) players in the same lockstep
@@ -287,7 +288,8 @@ struct DG_REFLECT(Sim) Health {
                       LoadPhase phase; /* Core, Engine, Editor, Game */ };
   ```
 * **Plugin = package** of modules + assets + Lua scripts + a manifest `plugin.dgplugin` (YAML):
-  name, version, engine version range, platforms, modules, dependencies, and a `deterministic: true|false` flag.
+  name, version, engine version range, platforms, modules, dependencies, a `deterministic: true|false` flag, and a
+  `headless: true|false` flag (whether the plugin is linked into headless server builds, §14.1).
 * Load modes:
   * **Editor / development**: dynamic libraries (`.dll` / `.dylib`) with a C-ABI entry point
     `extern "C" DG_PLUGIN_API dg::PluginInterface* dgCreatePlugin(dg::EngineContext*)`. C++ hot reload is supported for
@@ -627,22 +629,155 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 
 ---
 
-## 13. Networking (`dg::net`)
+## 13. Built-in Deterministic Multiplayer Backend (`dg::net`)
 
-* **Session model**: a host-authoritative relay (dedicated `dg-server`, or a peer acting as host) forwards input packets.
-  Peer-to-peer is possible for small player counts.
-* **Modes** (chosen per game):
-  * **Deterministic lockstep with input delay**: simplest, good for RTS and turn-adjacent games, and scales to many units.
-  * **Rollback (GGPO-style)**: predict missing remote inputs, simulate ahead, and on a late correction **restore
-    snapshot → re-simulate**. Good for action games. The cost is bounded by the max rollback window
-    (e.g. 8 ticks) × sim cost. The sim must therefore be fast enough to run about 8× per frame in the worst case.
-* **Input**: a `InputCommand` (reflected, bit-packed) per player per tick. Redundant sending of the last N inputs over
-  unreliable channels.
-* **Join-in-progress / reconnect**: the host sends a compressed full snapshot plus the input backlog.
-  Snapshot hashes are validated.
-* **Sync checks**: periodic checksums (§5.4) with desync dumps.
-* **Non-deterministic multiplayer** (optional plugin): state replication for MMO-like or physics-cosmetic games that
-  don't need lockstep. It is not the default.
+The engine ships a complete, **built-in** deterministic netcode stack: the client library, a dedicated session server,
+and the tooling. A game gets multiplayer by defining `InputCommand` and writing sim systems; it never writes
+networking code. The model is **predict/rollback with server-confirmed inputs**, the same family of architecture as
+Photon Quantum 3. That is a design reference only; the implementation is our own.
+
+### 13.1 Topology & roles
+
+```
+                      ┌──────────────────────────────────────────────────┐
+  Client A ──inputs──►│  dg-server  (headless, one process hosts N rooms) │
+  Client B ──inputs──►│  ┌───────────────────────────────────────────┐   │
+  Client C ──inputs──►│  │ Room: level "Arena", 30 Hz                │   │
+           ◄─confirmed│  │  • Input authority: tick clock, deadlines │   │
+              inputs ─│  │  • Checksum validator                     │   │
+           ◄─snapshots│  │  • (optional) authoritative headless sim  │   │
+                      │  └───────────────────────────────────────────┘   │
+                      └──────────────────────────────────────────────────┘
+```
+
+| Role | Responsibilities |
+|---|---|
+| **Client** | Samples local input → sends `InputCommand` for tick `T + inputOffset`. Runs **predicted** ticks with guessed remote inputs. On receiving confirmed inputs, it **rolls back** to the last verified tick and re-simulates. Sends checksums of verified ticks. |
+| **Server — input authority** (always on) | Owns the session clock. Collects inputs per tick until a **deadline**, substitutes a default or repeated input for any late or missing player, and broadcasts the **confirmed input set** for that tick. A late input is never "re-opened": the server's set is final, so every client agrees on history. |
+| **Server — checksum validator** (always on) | Compares per-tick checksums sent by clients (§13.4) and triggers resync (§13.5). |
+| **Server — authoritative simulation** (optional, `mode=verify`) | Runs the **same sim** headlessly on the room's level (§14.1), using only confirmed inputs. It never predicts and never rolls back. It is the ground truth for checksums, snapshots, late joins, and anti-cheat. |
+
+Two server modes:
+
+* **`relay`** (cheap, scales to many rooms per core): the server only confirms inputs and compares client checksums.
+  The truth is the **majority** of client checksums. Snapshots for resync or late join are requested from a client
+  that agrees with the majority (they are hash-verified before forwarding).
+* **`verify`** (recommended for competitive/ranked play): the server runs the authoritative headless sim. The truth is
+  always the server's state, and the server serves snapshots itself.
+
+Peer-hosted sessions (one client also runs the server room in-process) use the same code path, for LAN and dev.
+
+### 13.2 Ticks, frames and time synchronization
+
+* **Verified tick**: every input for it is confirmed by the server. The state is final and identical everywhere.
+* **Predicted tick**: simulated ahead of the last verified tick using predicted remote inputs. It is rolled back when
+  confirmations arrive.
+* Clients keep their sim clock **ahead of the server** by about `RTT/2 + jitterBuffer`, so local inputs arrive before
+  the deadline. Drift is corrected by **time dilation** (slightly speeding up or slowing down the client's tick
+  accumulator, ±5%), never by skipping ticks.
+* `inputOffset` (local input delay, 0–N ticks) is configurable per game, trading latency for fewer rollbacks.
+* The **max prediction window** (e.g. 10 ticks) is configurable. Beyond it, the client stalls its sim, rather than
+  diverging further.
+
+### 13.3 Input pipeline
+
+* `InputCommand` is a reflected struct (`DG_REFLECT(Input)`). It is bit-packed via reflection, with delta-compression
+  against the previous tick.
+* Clients send the last N unacknowledged inputs redundantly in every packet (unreliable channel), which tolerates loss
+  without retransmit delay.
+* **Server-side input validation hook** (`IInputValidator`): it clamps or rejects impossible inputs (rate, range)
+  before confirmation. This is the first anti-cheat layer.
+* **Commands**: rare, larger reliable messages (e.g. "buy item", "chat") that are confirmed into a specific tick, just
+  like inputs.
+* **Predicting remote inputs**: by default repeat the last confirmed input. Games can override this per input field
+  (e.g. reset "fire" to false).
+
+### 13.4 State hashing (desync detection)
+
+* **What is hashed**: all `Sim`-tagged components, walked via reflection in canonical entity/archetype order, plus the
+  entity allocator state, the sim RNG, the physics state hash (Jolt/Box2D), the tick number, and registered sim
+  resources. XXH3-64 (128-bit optionally).
+* **Hierarchical hashing**: the world hash is composed of **per-archetype-chunk hashes** and **per-system-group hashes**.
+  Chunk hashes are cached and recomputed only for chunks that are dirty this tick. That keeps per-tick hashing cheap
+  enough to run every tick in development and every N ticks (configurable, e.g. every 4) in shipping.
+* Clients send `(tick, worldHash)` for **verified ticks only** (predicted state is never compared).
+* On mismatch, the server can request the **hash tree** from the divergent client. Comparing it with the reference tree
+  pinpoints the exact component type and entity range that diverged, and this goes into the desync report.
+
+### 13.5 Resync of desynced clients
+
+```
+ client X hash(T) ≠ reference hash(T)
+        │
+        ▼
+ server marks X DESYNCED at T ──► X: stop sending checksums, keep sending inputs (its input still counts)
+        │
+        ▼
+ reference snapshot S(T') chosen (T' ≥ T, latest verified tick available)
+   verify mode: server's own sim snapshot
+   relay mode : snapshot uploaded by a majority-agreeing client, hash-checked by server
+        │
+        ▼
+ server streams S(T') to X  (chunked, zstd, delta vs. X's last good baseline if one exists)
+        │
+        ▼
+ X: restore S(T') → verify hash(S) == reference → fast-forward through confirmed inputs T'..now
+    (headless catch-up, presentation paused or interpolated) → resume prediction
+        │
+        ▼
+ X sends desync report (hash trees, last inputs, build/plugin manifest) → server logs / uploads for analysis
+```
+
+* **Snapshot format**: the same ECS + physics + RNG snapshot used for rollback (§7), serialized to binary and compressed.
+  The **presentation world is rebuilt** from the restored sim state. Entities are re-linked by sim entity ID, and
+  cosmetic state (particles, audio) is reset or faded.
+* **Policy** (`ResyncPolicy`, configurable): max resyncs per minute, then kick. A client that keeps desyncing at the same
+  tick on the same build triggers a **bug report**, not a kick loop. A desynced client's checksums are ignored for the
+  majority vote until it resyncs successfully.
+* The **same path serves late join and reconnect**: a joining client is simply a client whose state is "missing" at T.
+
+### 13.6 Session lifecycle & compatibility
+
+1. Client connects → **handshake** with the determinism manifest: engine build hash, sim-module/plugin hashes,
+   sim-asset content hash for the room's level, tick rate, and `InputCommand` schema hash. Any mismatch is rejected
+   with a clear error.
+2. Room start: the server broadcasts the start tick, initial RNG seed, and player slots. All peers load the level and
+   start from identical state.
+3. Running: the input/confirm loop (§13.2–13.3), checksums (§13.4), and resync on demand (§13.5).
+4. End: the server optionally stores a **replay** (initial snapshot + confirmed inputs). This is compact, and can be
+   re-simulated by any headless build for verification, spectating, or bug repro.
+
+### 13.7 Server architecture (`dg-server`)
+
+* **One process, many rooms**. Each room runs on a job-system worker, with a fixed tick timer per room.
+* Room capacity and modes (`relay` vs `verify`) are set by room config. In `verify` mode a room loads its level
+  through the headless asset path (§14.1).
+* **Management API** (HTTP/JSON, plugin-replaceable): create/list/close rooms, health, metrics (Prometheus format),
+  and replay download.
+* **Matchmaking/lobby** is out of the core. It is a plugin interface (`ILobbyService`) with a simple built-in room
+  list for development. External services (Steam, EOS, custom) plug in here.
+* **Transport** is behind `ITransport`: ENet (default, UDP), GameNetworkingSockets (encryption, relays), and a WebSocket
+  fallback (later). Channels: unreliable-sequenced (inputs), reliable-ordered (commands, snapshots, control).
+
+### 13.8 Client API surface (C++ and Luau)
+
+```lua
+-- view-side Luau (presentation): connecting and status
+local session = dg.net.connect { address = "eu.example.com:7777", room = "Arena-42" }
+session.on_state_changed = function(s) ui.status:set_text(s) end   -- Connecting/Syncing/Running/Resyncing
+```
+
+Sim code is **identical** online, offline, and in replays. The sim only sees `world:input(playerSlot)` for the current
+tick. Prediction, rollback, and resync are invisible to gameplay code.
+
+Presentation helpers: `IsPredicted(entity)`, a "verified vs predicted" interpolation choice per view component, and
+**rollback-safe events** (sim events raised on predicted ticks are delivered to the presentation layer with
+`predicted=true`, then confirmed or cancelled, so a sound or VFX plays once and isn't duplicated on resimulation).
+
+### 13.9 Non-deterministic replication (optional plugin)
+
+State replication (server-authoritative snapshots + interpolation) for games that don't fit lockstep, such as MMO-scale
+worlds. It is not the default and is not covered by the determinism guarantees.
 
 ---
 
@@ -654,6 +789,7 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 | `Development` | ✅ | ✅ | ✅ | ✅ | Default daily config. |
 | `Profile` | minimal | ✅ | ✅ | ❌ | Player only. |
 | `Shipping` | ❌ | ✅ (+LTO) | ❌ | ❌ | Static plugins, stripped symbols, cooked paks only. |
+| `Server` (`DG_HEADLESS`) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§14.1). |
 
 * **The determinism compile flags are identical in all configs** for sim translation units (`dg_sim_target()` CMake
   helper). This means Debug and Shipping builds can play together.
@@ -664,7 +800,55 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
   * Android: generates a Gradle project from `/platform/android` (SDL3 activity), copies paks into `assets/` or an
     install-time asset pack, and builds an `.aab` / `.apk` (ARM64). Keystore signing is configured per project.
 * **CI matrix** (GitHub Actions): `windows-x64-clangcl`, `macos-arm64-clang`, `android-arm64-ndk`
-  (build + emulator tests), and `linux-x64` (server, tools). Determinism replay jobs run across all of them (§5.4).
+  (build + emulator tests), and `linux-x64` (headless server, tools). Determinism replay jobs run across all of them,
+  **including the headless server build** (§5.4).
+
+### 14.1 Headless build mode (per-level)
+
+A **headless build** is the simulation without presentation. It produces dedicated servers (`verify` rooms, §13.1),
+bots, replay verifiers, and CI determinism runners — all **for a specified set of levels**.
+
+**Compile-time profile (`DG_HEADLESS=1`)**
+
+* Linked: core, platform (no window), reflection/serialization, jobs, ECS, sim, physics, Luau (sim scripts only), net,
+  asset runtime, plugin manager, and plugins marked `deterministic: true` or `headless: true`.
+* **Excluded**: RHI/renderer, GI, UI, audio, animation pose evaluation (unless a sim system needs it in deterministic
+  mode), ImGui, editor, and all `*.view.luau` scripts. A **Null RHI / Null audio** backend satisfies any optional
+  references, so gameplay modules don't need `#if`s.
+* The sim translation units are built with **the exact same `dg_sim_target()` flags** as the clients. The headless
+  binary is part of the determinism contract (x64 and ARM64; Linux, Windows, and macOS).
+* There is also a **runtime `--headless` flag** on the normal player and editor builds (no window, no GPU device),
+  so developers can run a server room or replay check without a separate build.
+
+**Level-scoped cooking**
+
+* `dg-cook --profile headless --levels Levels/Arena.dgscene,Levels/Duel.dgscene` computes the dependency closure of only
+  those levels, and **strips presentation data**: render meshes, textures, materials, shaders, audio, UI, VFX, and
+  view-only components on prefabs. It keeps collision shapes, navmesh, data tables, sim scripts (Luau bytecode),
+  sim components, and prefabs.
+* The output is a small `server.dgpak` and a **sim-asset manifest hash per level**. That hash is the one clients send in
+  the handshake (§13.6), so a server can only host levels whose sim content matches the clients' builds.
+
+**Packaging**
+
+```bash
+dg-package --target server --platform linux-x64 --levels Levels/Arena.dgscene --config Shipping
+dg-package --target server --platform windows-x64 --levels Levels/Arena.dgscene,Levels/Duel.dgscene
+```
+
+* Outputs: the `dg-server` binary + `server.dgpak` + `server.yaml` (rooms, ports, tick rate, mode, resync policy).
+  An optional **Docker image** (Linux) for fleet deployment.
+* Exposed in the editor's **Build Settings → Dedicated Server** tab (level checklist, platform, mode).
+
+**Runtime**
+
+```bash
+dg-server --levels Arena,Duel --port 7777 --mode verify --max-rooms 64 --tick-rate 30
+dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; exits non-zero on hash mismatch
+```
+
+* The editor can launch a **local headless server** in-process or as a child process for multiplayer play-mode testing
+  (Game View with N simulated clients, §12).
 
 ---
 
@@ -677,7 +861,7 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 | **2 — Rendering MVP** | RHI (Vulkan on Windows, MoltenVK on macOS, Android), render graph, bindless, glTF import, PBR forward/deferred, ImGui. |
 | **3 — Scripting & physics** | Luau sandbox, binding generator, `dg.d.luau`, Jolt + Box2D deterministic integration, hot reload. |
 | **4 — Editor MVP** | Docking layout, Hierarchy/Inspector/Scene/Game/Project/Console, gizmos, undo/redo, play mode, scenes, prefabs (+ overrides). |
-| **5 — Networking** | Lockstep then rollback, relay server, desync tooling, network debugger panel. |
+| **5 — Networking** | Headless build profile + level-scoped cook, `dg-server` (relay → verify mode), confirmed-input protocol, predict/rollback, hierarchical state hashing, snapshot resync / late join, network debugger panel. |
 | **6 — Content** | FBX (ufbx), animation (ozz), audio, 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
 | **7 — Packaging** | `dg-cook`, `.dgpak`, `dg-package` for Windows/macOS/Android, Build Settings window. |
 | **8 — Advanced rendering** | Shadows, post-FX, baked GI → DDGI → Lumen-style SDF/surface-cache GI → HW RT path; mobile tier tuning. |
@@ -693,6 +877,8 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 | Cross-arch float determinism is fragile (compiler upgrades, new code paths) | Determinism CI gate on every PR; pin compiler versions; isolate sim code in `dg_sim_target`; lint banned functions. |
 | MoltenVK/KosmicKrisp feature gaps (ray query, descriptor buffer, mesh shaders) on macOS | Capability tiers; the GI software path doesn't require RT; keep the RHI clean enough for a native Metal backend. |
 | C++26 reflection not available on Apple/NDK/MSVC toolchains | `dg-reflect` codegen; a macro surface compatible with future P2996 annotations. |
+| Resync storms (a client repeatedly desyncs on a deterministic bug) | `ResyncPolicy` rate limits; repeated same-tick desyncs are reported as bugs with hash-tree diffs; determinism CI includes the headless server build. |
+| Server cost in `verify` mode | `relay` mode for casual rooms; headless builds strip presentation; many rooms per process. |
 | Rollback cost with heavy physics | Configurable rollback window; lockstep mode; physics LOD for sim entities; profile on Android early. |
 | Lumen-style GI complexity | Phased tiers; baked/DDGI first; time-boxed research spikes; AMD MIT references. |
 | Scope (an engine of Unity+UE breadth) | Strict phase gating; every module behind interfaces so features can be delayed without refactors. |
@@ -703,6 +889,7 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 2. Lua-first vs C++-first gameplay template for new projects.
 3. ENet vs GameNetworkingSockets as the default transport.
 4. Visibility buffer vs deferred G-buffer as the desktop default.
+5. Default server mode for new projects (`relay` vs `verify`). *(Proposed: `verify` once the headless build is stable.)*
 
 ---
 
@@ -714,4 +901,5 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 * Jolt Physics (determinism notes): <https://jrouwe.github.io/JoltPhysics/>
 * P2996 Reflection for C++26: <https://isocpp.org/files/papers/P2996R13.html>
 * GGPO rollback reference: <https://github.com/pond3r/ggpo>
+* Photon Quantum 3 (architecture reference for server-confirmed-input predict/rollback; no code used): <https://doc.photonengine.com/quantum/>
 * Luau: <https://luau.org/>
