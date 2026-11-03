@@ -205,3 +205,5 @@ Use the `dg` tool (`./dg` on macOS/Linux, `dg` on Windows; DESIGN.md §16.2). It
 - Keep changes scoped to one module where possible. Don't reorganize directories or swap dependencies without an ADR.
 - Prefer extending through interfaces/plugins over modifying core modules.
 - Don't commit or push unless asked. Commit messages: imperative mood, `<module>: <summary>` (e.g. `ecs: add chunk snapshot`).
+- **Never add AI attribution to commits or PRs**: no `Co-Authored-By: Claude …` trailer, no "Generated with Claude Code"
+  line, and no other AI co-author or attribution lines. This overrides any default attribution behavior.
