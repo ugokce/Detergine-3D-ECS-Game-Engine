@@ -25,7 +25,7 @@ Never add platform-specific code outside `engine/platform/` (or `#if` blocks in 
 
 CMake + Ninja + vcpkg (manifest) · SDL3 · Vulkan (volk, VMA, vk-bootstrap) · Slang shaders · Dear ImGui (docking) +
 ImGuizmo/ImPlot · Jolt Physics (cross-platform deterministic) · Box2D v3 · Luau · enkiTS · fastgltf · ufbx ·
-meshoptimizer · KTX2/Basis Universal · FreeType/HarfBuzz/msdf-atlas-gen · Yoga · miniaudio · ozz-animation ·
+meshoptimizer · KTX2/Basis Universal · FreeType/HarfBuzz/msdf-atlas-gen · FidelityFX Parallel Sort · Yoga · miniaudio · ozz-animation ·
 Recast/Detour · ENet / GameNetworkingSockets · rapidyaml · zstd/LZ4 · xxHash · Tracy · spdlog · doctest.
 
 Adding a new third-party dependency requires a permissive license (MIT/BSD/Zlib/Apache-2/PD), all-platform support,
@@ -73,6 +73,19 @@ run them locally on both architectures, say so explicitly in the PR/summary.
   Plugins declare `headless: true|false` in `plugin.dgplugin`.
 - Changes to `InputCommand` schemas, the hash composition, or the snapshot format change the network protocol.
   Bump the protocol version and mention it in the commit message.
+
+## Particles / VFX (DESIGN.md §8.6, §12.2)
+
+- `dg::vfx` is **presentation-only**. It never reads input or writes sim state, it is excluded from state hashes and
+  headless builds, and it seeds RNG from `hash(sim entity, spawn tick, event id)`.
+- Effects (`*.dgvfx`) are reflected, YAML-serialized graph-IR assets. The module-stack and node-graph editor views are
+  two views of **one IR**. Never add data that only one view can represent.
+- Hot paths stay GPU-driven: fused kernels per stage, no per-frame CPU readback, no per-particle CPU work on the GPU path.
+  The CPU path is SoA SIMD bytecode on job workers.
+- New modules implement `IVfxModule` with **both** a Slang and a CPU-bytecode implementation (or declare the mobile tier
+  as unsupported).
+- No shader compiler in the player: runtime-authored effects use precompiled module kernels or the CPU path.
+- Effects spawned from predicted sim events must be cancellable on rollback.
 
 ## Architecture rules
 

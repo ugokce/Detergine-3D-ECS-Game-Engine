@@ -83,6 +83,8 @@ nondeterminism in anything that touches the simulation.
 | Debug UI / editor UI | **Dear ImGui (docking branch)** | MIT | Plus **ImGuizmo**, **ImPlot**, **imgui-node-editor**. |
 | GI reference designs | Lumen (SIGGRAPH 2022 talk), AMD **FidelityFX Brixelizer GI** / **GI-1.0** | (papers) / MIT | **Clean-room** implementation only — see §8.5. |
 | Upscaling | **AMD FSR 2/3** (FidelityFX SDK) | MIT | Optional plugin; also enables temporal stability for GI. |
+| GPU sorting | **FidelityFX Parallel Sort** | MIT | Radix sort for translucent particles (§8.6). |
+| Particles / VFX | **Custom** (`dg::vfx`) | — | Graph IR → fused Slang compute kernels + SIMD CPU bytecode (§8.6). |
 
 ### 2.3 Physics
 
@@ -140,6 +142,7 @@ nondeterminism in anything that touches the simulation.
 | Renderer / render graph | Core differentiator; must integrate GI, bindless, and mobile tiers. |
 | Reflection & serialization | Spans compilers that lack C++26 reflection (§2.9). |
 | Rollback netcode | Tight coupling with ECS snapshots and the Lua sandbox. |
+| Particle system / VFX | Must share the render graph, bindless heap, global SDF and GI radiance cache, and be rollback-aware. No permissive, Vulkan-native, production-grade GPU VFX library exists. |
 | Editor | Built on ImGui, but all panels/tools are ours. |
 | Runtime UI | Must be ECS-native, prefab-able, and editable in the editor. |
 
@@ -214,6 +217,7 @@ nondeterminism in anything that touches the simulation.
   ui/                      dg::ui    – runtime UI (retained, Yoga layout, MSDF text)
   audio/                   dg::audio – miniaudio backend
   anim/                    dg::anim  – ozz-animation integration, state machines
+  vfx/                     dg::vfx   – particle graph IR, compiler, GPU/CPU runtimes
   scene/                   dg::scene – scenes, prefabs, transforms, hierarchy
   plugin/                  dg::plugin – module manager, plugin ABI
 /editor/                   dg::editor – ImGui editor app and tool panels
@@ -535,6 +539,90 @@ return dg.system {
 **Phasing:** Phase A — baked lightmaps and probes; Phase B — DDGI probes; Phase C — SDF plus surface cache plus screen
 probes (the "Lumen-style" path); Phase D — hardware RT path.
 
+### 8.6 Particle system & VFX (`dg::vfx`)
+
+A GPU-driven particle system in the class of Niagara and Unity VFX Graph, with a SIMD CPU path for mobile and for
+effects that need CPU-side results. Effects are fully **serialized assets**, authored in the built-in Particle Editor
+(§12.2).
+
+**Data model — one IR, two authoring views**
+
+* An **Effect** asset (`*.dgvfx`, YAML) contains one or more **Emitters**, plus **exposed parameters**, bounds, LOD
+  settings, and scalability settings.
+* Each emitter is a **graph** of typed nodes organized into stages: `Spawn → Initialize → Update → Render`, plus
+  `Events` (on death, on collision, on timer) that can drive **sub-emitters**.
+* The editor offers two views over the **same graph IR**: a **module stack** (Unity Shuriken-style: Emission, Shape,
+  Velocity over Life, Color over Life, Noise, Collision, …) for fast authoring, and a **node graph** (VFX Graph-style)
+  for custom logic. Modules are themselves saved subgraphs, so users and plugins can author new modules.
+* **Particle attributes** (position, velocity, age, lifetime, color, size, rotation, sprite index, plus custom ones) are
+  declared by the nodes that use them. The compiler **prunes unused attributes** and picks the storage precision
+  (`f32` / `f16` / `unorm8`) per attribute.
+
+**Compilation (cook time)**
+
+* The graph IR is lowered to one of two targets:
+  * **GPU**: **Slang compute kernels**, one *fused* kernel per stage per emitter, with no per-module dispatches.
+    Constant folding and dead-attribute elimination are done before codegen.
+  * **CPU**: a compact **SIMD bytecode** (SoA, 4/8-wide via the engine's SIMD layer), executed by job-system workers.
+* The cooker emits both targets where the platform tier allows it, and the runtime picks per emitter by tier and
+  budget. Shader variants are precompiled, so **no shader compiler ships in the player**.
+* Effects authored or modified **at runtime** (user content, in-game editors) are limited to parameter, curve, and module
+  combinations of **precompiled module kernels** (an "uber-module" path), or they use the CPU bytecode path, which
+  compiles on any device. They are serialized through the same reflection path as editor-authored effects.
+
+**GPU runtime**
+
+* Per-emitter SoA attribute buffers in a shared pooled heap (bindless). Allocation uses **dead-list / alive-list
+  compaction**, so there are no CPU readbacks.
+* Each frame: spawn → initialize → update (fused) → compaction → optional sort → `DrawIndirect`, all on **async compute**
+  where it is available.
+* **Sorting**: GPU radix sort (FidelityFX Parallel Sort, MIT) only for emitters that need back-to-front ordering.
+  Others render unsorted (additive) or with weighted-blended OIT.
+* **Forces & collision**: gravity/drag/vortex/point attractors, curl noise, **3D vector fields** (texture assets),
+  **depth-buffer collision**, and **SDF collision against the global SDF** used by GI (§8.5) — so collision with the
+  whole scene is cheap.
+* **Events / sub-emitters**: GPU append buffers (death or collision positions) consumed by child emitters in the same
+  frame. Optional *async* readback (N frames later) for audio or gameplay-cosmetic triggers.
+* **Renderers**: billboard sprites (camera-facing, velocity-aligned, fixed axis) with **flipbook atlases** and motion
+  vectors; **ribbons/trails** (GPU-built strips); **mesh particles** (instanced); **decals**; **light particles**
+  (fed into clustered lighting with a cap); **soft particles**; **distortion / refraction**.
+* **Lighting**: lit particles sample the clustered lights and the **GI radiance cache** (§8.5), with half-resolution
+  rendering plus upsampling for heavy translucent effects.
+
+**Performance & scalability**
+
+* **Overdraw reduction**: the cooker generates **trimmed sprite geometry** (tight 4–8 vertex polygons per flipbook frame)
+  instead of quads.
+* **Fixed or precomputed bounds** per effect for culling; GPU frustum culling per particle in the render stage.
+* **Significance & budget manager**: a global particle and GPU-time budget per platform tier. Effects are ranked by
+  distance, screen size, and priority. Low-significance effects drop spawn rate, LOD, or are culled.
+  **Distance LODs** per emitter.
+* **Pooling**: effect instances and their GPU allocations are pooled. Prewarm/warm-up is simulated at load time,
+  not on spawn.
+* **Batching**: emitters that share a material and renderer type are drawn with one indirect draw.
+* **Mobile tier**: CPU SIMD path or simplified GPU kernels, `f16` attributes, no GPU sort (fallback: per-emitter
+  distance sorting), TBDR-friendly blending, low-resolution translucency.
+* Every emitter reports cost (particle count, memory, kernel and draw time via GPU timestamps) to the profiler and the
+  editor.
+
+**Relationship to the simulation**
+
+* Particles are **presentation-only**. They never affect sim state, and they are excluded from state hashing and
+  headless builds.
+* **Visual consistency across clients**: each effect instance is seeded deterministically from
+  `hash(sim entity, spawn tick, event id)`, so all players see the "same" effect (best-effort — GPU float results are
+  not bit-guaranteed).
+* **Rollback-safe**: effects triggered by *predicted* sim events (§13.8) are spawned as tentative. If the event is
+  cancelled after a rollback, the effect is killed or faded; if confirmed, it continues untouched.
+  Gameplay-relevant "particles" (bullets, debris that matters) must be sim entities, not VFX.
+
+**Integration**
+
+* `VfxEffect` presentation component (asset GUID, exposed-parameter overrides, autoplay, attach-to-socket).
+* `dg.vfx.play(effect, { position = ..., params = { Color = ... } })` from view Luau and C++.
+  Exposed parameters can be bound to reflected component fields.
+* Effects can live on prefabs. Overrides of exposed parameters use the normal prefab override path (§10).
+
 ---
 
 ## 9. Asset Pipeline
@@ -609,6 +697,7 @@ closely matches Unity's dark/light skins.
 | **Profiler** | Integrated Tracy client view plus engine counters (sim tick ms, rollback count, GPU passes). |
 | **Animation / Animator** | Timeline and state-machine graph editor (imgui-node-editor). |
 | **UI Designer** | See §11. |
+| **Particle Editor** | See §12.2. |
 | **Network Debugger** | Ping/jitter/rollback visualizer, per-tick checksum timeline, desync diff viewer. |
 | **Build Settings** | Scene list, platform targets (Windows/macOS/Android), quality tiers, Build / Build & Run. |
 
@@ -626,6 +715,34 @@ editor preferences, keyboard shortcut mapping (Unity defaults), asset thumbnails
 * **Prefab painting / scatter** and **grid snapping & alignment** tools.
 * **Navigation**: navmesh baking with **Recast/Detour** (Zlib), using deterministic pathfinding queries in the sim.
 * **Lighting tools**: light probe and reflection probe placement, lightmap baking, and GI debug visualizers.
+
+### 12.2 Particle Editor (built-in)
+
+A dedicated, dockable **Particle Editor** window opens when you double-click a `*.dgvfx` asset. It edits the graph IR
+from §8.6.
+
+| Area | Function |
+|---|---|
+| **Emitter list / system overview** | All emitters in the effect, with enable/solo toggles, ordering, sub-emitter links, and per-emitter cost badges (particles, memory, ms). |
+| **Module stack view** | Stage-ordered module stack (Spawn / Initialize / Update / Render / Events). Drag to reorder modules, add them from a searchable library, and enable/disable them. Inline curves and gradients. |
+| **Node graph view** | imgui-node-editor canvas over the same IR: typed pins, attribute get/set nodes, math, noise, sampling (textures, curves, SDF, vector fields), custom subgraph modules, comments/groups, and inline value previews. Switching views loses nothing. |
+| **Inspector** | Reflection-generated properties of the selected module or node. Every value can be constant, random range, curve, gradient, or bound to an **exposed parameter**. |
+| **Curve & gradient editors** | Bezier/linear/constant keys, min-max curve pairs, presets, and copy/paste between properties. Gradients with color + alpha keys and HDR intensity. |
+| **Preview viewport** | An isolated preview scene with its own camera, lighting presets (day/night/studio), background/floor toggles, a scene-depth proxy for collision tests, and a **"preview in scene"** mode that drives the instance selected in the Scene View. |
+| **Timeline / playback** | Play, pause, single-step, restart, loop, simulation speed (0.01×–10×), scrub to time t (re-simulated deterministically from the fixed seed), and prewarm preview. |
+| **Debug overlays** | Bounds (fixed vs measured, with "fit bounds" button), particle count graph, overdraw heatmap, attribute inspector (pick a particle to see its attribute values via readback), wireframe of trimmed sprite geometry, sort-order view. |
+| **Profiler strip** | GPU kernel and draw timings per stage, memory per attribute buffer, and budget usage for the selected **platform tier** (preview as Android/mobile). |
+| **Scalability / LOD tab** | Per-tier and per-distance overrides (spawn-rate scale, max particles, disabled modules), previewed live. |
+| **Flipbook / atlas tool** | Import image sequences or sheets → build a flipbook atlas (stb_rect_pack), set frame rate and blending, and generate trimmed geometry. |
+| **Templates & library** | Starter effects (fire, smoke, sparks, magic, trails, rain/snow, explosions) and a user/plugin module library. Save any emitter as a template. |
+
+* **Live editing**: changes recompile only the affected emitter's kernels or bytecode in the background (Slang in the
+  editor) and **hot-swap into running play mode and the Game View** without restarting the effect.
+* **Validation**: the compiler reports unused attributes, missing bounds, unbounded spawn rates, per-tier budget
+  overruns, and modules unsupported on the mobile tier — inline on the offending node.
+* Full **undo/redo**, multi-select, copy/paste of modules and nodes across effects, and diff-friendly YAML saves.
+* **Extensible**: plugins add modules (`IVfxModule`: graph definition + Slang snippet + CPU bytecode implementation),
+  renderers (`IVfxRenderer`), and editor drawers.
 
 ---
 
@@ -812,7 +929,7 @@ bots, replay verifiers, and CI determinism runners — all **for a specified set
 
 * Linked: core, platform (no window), reflection/serialization, jobs, ECS, sim, physics, Luau (sim scripts only), net,
   asset runtime, plugin manager, and plugins marked `deterministic: true` or `headless: true`.
-* **Excluded**: RHI/renderer, GI, UI, audio, animation pose evaluation (unless a sim system needs it in deterministic
+* **Excluded**: RHI/renderer, GI, particles/VFX (`*.dgvfx` stripped by the cook), UI, audio, animation pose evaluation (unless a sim system needs it in deterministic
   mode), ImGui, editor, and all `*.view.luau` scripts. A **Null RHI / Null audio** backend satisfies any optional
   references, so gameplay modules don't need `#if`s.
 * The sim translation units are built with **the exact same `dg_sim_target()` flags** as the clients. The headless
@@ -863,6 +980,7 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 | **4 — Editor MVP** | Docking layout, Hierarchy/Inspector/Scene/Game/Project/Console, gizmos, undo/redo, play mode, scenes, prefabs (+ overrides). |
 | **5 — Networking** | Headless build profile + level-scoped cook, `dg-server` (relay → verify mode), confirmed-input protocol, predict/rollback, hierarchical state hashing, snapshot resync / late join, network debugger panel. |
 | **6 — Content** | FBX (ufbx), animation (ozz), audio, 2D sprites/atlases/tilemaps, runtime UI and UI Designer. |
+| **6b — VFX** | Particle graph IR + YAML serialization, module-stack editor, CPU SIMD runtime → GPU fused-kernel runtime, sprites/ribbons/meshes, sorting, depth/SDF collision, node-graph view, flipbooks, budgets/LOD, profiler integration. |
 | **7 — Packaging** | `dg-cook`, `.dgpak`, `dg-package` for Windows/macOS/Android, Build Settings window. |
 | **8 — Advanced rendering** | Shadows, post-FX, baked GI → DDGI → Lumen-style SDF/surface-cache GI → HW RT path; mobile tier tuning. |
 | **9 — World building** | Terrain, foliage, brush modeling, splines, navmesh. |
@@ -880,6 +998,7 @@ dg-server --replay match_0193.dgreplay --verify      # headless re-simulation; e
 | Resync storms (a client repeatedly desyncs on a deterministic bug) | `ResyncPolicy` rate limits; repeated same-tick desyncs are reported as bugs with hash-tree diffs; determinism CI includes the headless server build. |
 | Server cost in `verify` mode | `relay` mode for casual rooms; headless builds strip presentation; many rooms per process. |
 | Rollback cost with heavy physics | Configurable rollback window; lockstep mode; physics LOD for sim entities; profile on Android early. |
+| GPU particle cost on mobile/TBDR (overdraw, bandwidth) | CPU SIMD path, trimmed sprite geometry, budgets per tier, low-resolution translucency, profiling on Android from the start of phase 6b. |
 | Lumen-style GI complexity | Phased tiers; baked/DDGI first; time-boxed research spikes; AMD MIT references. |
 | Scope (an engine of Unity+UE breadth) | Strict phase gating; every module behind interfaces so features can be delayed without refactors. |
 
