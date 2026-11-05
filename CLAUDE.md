@@ -15,6 +15,26 @@ becomes the default server mode once the headless build is stable (`relay` until
 **Full architecture: [`docs/DESIGN.md`](docs/DESIGN.md). Read the relevant section before changing a subsystem.**
 Architectural decisions go into `docs/adr/NNNN-title.md`. Update `DESIGN.md` when a decision changes the design.
 
+## Documentation is part of every change (mandatory)
+
+The engine manual (`docs/manual/` → HTML in `build/docs/`, built with `./dg docs`) must always describe the engine as it
+is. **Every change that adds or changes a system, API, behaviour, option, command, or workflow must update the manual
+in the same commit.** A change without its documentation is not done.
+
+- **New system** → a new page in `docs/manual/systems/` (or `tooling/`) following the system page template: `##
+  Overview`, `## How to use`, `## How to edit`, `## Testing` (plus `## Reference`). Add its files to the page's
+  `sources`, define new terms in `docs/manual/reference/glossary.md`, and link it from the architecture pages.
+- **Changed system** → update every page whose `sources` include the changed files: usage examples, how-to-edit notes,
+  reference tables, test counts, golden hashes.
+- **Planned system implemented** → move it from `docs/manual/planned/` to `systems/` and set `status: implemented`.
+- Examples must compile against the real headers. Claims must match the code. Mark future work as planned.
+- Run `./dg docs --check` before committing (the pre-push hook does too). CI runs
+  `dg docs --check --changed-since <base>`, which **fails when a documented source file changed and none of its pages
+  did**. Only a change with genuinely no documentation impact (typo, comment, internal refactor) may opt out, with a
+  `Docs: none (<reason>)` line in the commit message.
+- How to write pages: `docs/manual/contributing/documentation.md`. `docs/DESIGN.md` stays the design record; the manual
+  explains what exists, how to use it, and how to change it.
+
 ## Targets
 
 | Platform | Arch | Editor | Runtime | Graphics |
@@ -222,7 +242,9 @@ Use the `dg` tool (`./dg` on macOS/Linux, `dg` on Windows; DESIGN.md §16.2). It
 
 ## Working agreements for AI agents
 
-- Read the relevant DESIGN.md section first. If a request conflicts with these rules, especially the determinism rules,
+- Read the relevant manual page (`docs/manual/`) and DESIGN.md section first. Update the manual as part of the change (see
+  *Documentation is part of every change*).
+- If a request conflicts with these rules, especially the determinism rules,
   stop and say so instead of working around it.
 - Keep changes scoped to one module where possible. Don't reorganize directories or swap dependencies without an ADR.
 - Prefer extending through interfaces/plugins over modifying core modules.

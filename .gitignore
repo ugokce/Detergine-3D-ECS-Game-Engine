@@ -49,3 +49,6 @@ __pycache__/
 
 # Launcher GUI settings (per user)
 /.dg/
+
+# Local preview server config (machine-specific paths)
+/.claude/launch.json

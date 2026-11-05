@@ -16,6 +16,34 @@ env:
   VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
 
 jobs:
+  # The manual must stay valid and must change together with the code it documents (CLAUDE.md, Documentation).
+  docs:
+    name: Manual
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check pages, links, coverage, and doc updates for changed sources
+        shell: bash
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$BASE" ] && [ "$BASE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$BASE" 2>/dev/null; then
+            python tools/docs/build_docs.py --check --changed-since "$BASE"
+          else
+            python tools/docs/build_docs.py --check
+          fi
+      - name: Build the HTML manual
+        run: python tools/docs/build_docs.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: detergine-manual
+          path: build/docs
+
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}

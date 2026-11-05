@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}} · Detergine Manual</title>
+<meta name="description" content="{{description}}">
+<link rel="stylesheet" href="{{root}}style.css">
+<script>
+  try { const t = localStorage.getItem("dg-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+</head>
+<body>
+<header class="topbar">
+  <button class="menu-toggle" aria-label="Toggle navigation" aria-expanded="false">☰</button>
+  <a class="brand" href="{{root}}index.html"><span class="brand-mark">◆</span> Detergine <span class="brand-sub">Manual</span></a>
+  <div class="search">
+    <input id="search-input" type="search" placeholder="Search the manual  ( / )" autocomplete="off" aria-label="Search">
+    <div id="search-results" class="search-results" role="listbox" hidden></div>
+  </div>
+  <button class="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">◐</button>
+</header>
+<div class="layout">
+  <nav class="sidebar" aria-label="Manual">{{nav}}</nav>
+  <main class="content" id="content">{{content}}</main>
+  <aside class="toc" aria-label="On this page">{{toc}}</aside>
+</div>
+<script>window.DG_ROOT = "{{root}}";</script>
+<script src="{{root}}search-index.js"></script>
+<script src="{{root}}app.js"></script>
+</body>
+</html>

@@ -77,6 +77,10 @@ A step is only marked done when its exit criteria hold on macOS ARM64. Windows x
   * Xcode's Debug libc++ hardening is pinned to `none`, because it is ABI-incompatible with vcpkg-built libraries
     (caught as a heap overflow inside GoogleTest under ASan).
   * The `arm64-osx-dg` overlay triplet builds packages for macOS 14.0, the engine's deployment target.
+* **CI status:** macOS ARM64, **Linux x64 (golden hashes reproduced bit for bit on x64)**, Linux ASan + UBSan and
+  Android are green; Windows x64 is being fixed.
+* **Engine manual:** `docs/manual/` → HTML via `./dg docs`. CI's `Manual` job validates it and requires doc updates for
+  changed sources (CLAUDE.md, *Documentation is part of every change*).
 * **Remaining:**
-  * Confirm CI is green on GitHub (it has not run yet), including the x64 golden hashes.
+  * Windows x64 CI green.
   * spdlog sinks, Tracy, xxHash.

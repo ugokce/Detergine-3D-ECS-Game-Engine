@@ -17,7 +17,8 @@ struct NoErrorDialogs {
     NoErrorDialogs() {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
         _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
-        for (int type : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
+        // The _CrtSetReport* calls compile to nothing without _DEBUG, so `type` is unused outside Debug builds.
+        for ([[maybe_unused]] int type : {_CRT_WARN, _CRT_ERROR, _CRT_ASSERT}) {
             _CrtSetReportMode(type, _CRTDBG_MODE_FILE);
             _CrtSetReportFile(type, _CRTDBG_FILE_STDERR);
         }

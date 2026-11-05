@@ -3,7 +3,9 @@
 A natively deterministic, modular 3D/2D game engine: C++23 core, Vulkan renderer, Luau gameplay scripting, and
 built-in lockstep/rollback multiplayer. Targets Windows x64, macOS ARM64, Android ARM64 and headless servers.
 
-- Architecture: [docs/DESIGN.md](docs/DESIGN.md)
+- **Engine manual** (HTML, from high-level architecture down to every system, with usage and editing guides): run
+  `./dg docs --open`. Sources live in [docs/manual/](docs/manual/).
+- Architecture and design decisions: [docs/DESIGN.md](docs/DESIGN.md)
 - Contributor rules: [CLAUDE.md](CLAUDE.md)
 
 ## Quick start

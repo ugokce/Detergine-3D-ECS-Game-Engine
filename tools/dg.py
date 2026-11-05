@@ -14,6 +14,7 @@ Run through the launchers in the repository root: `./dg <command>` (macOS/Linux)
   dg presets                         list the CMake presets available on this machine
   dg gui                             open the graphical launcher (all of the above, with every build option)
   dg hooks [install|uninstall]       git pre-push hook that runs `dg test dev -L unit`
+  dg docs [--open] [--check]         build or validate the HTML engine manual (docs/manual -> build/docs)
 
 Common options: --preset P, -D NAME=VALUE (e.g. -D DG_HEADLESS=ON), -j N, --verbose, --fresh.
 
@@ -436,6 +437,7 @@ PRE_PUSH_HOOK = f"""#!/bin/sh
 {HOOK_MARKER}
 # Runs the fast unit and determinism tests before anything leaves this machine. Bypass once with `git push --no-verify`.
 cd "$(git rev-parse --show-toplevel)" || exit 1
+python3 tools/dg.py docs --check || exit 1
 exec python3 tools/dg.py test dev -L unit
 """
 
@@ -460,6 +462,22 @@ def cmd_hooks(args: argparse.Namespace) -> None:
             info("no dg pre-push hook installed")
     else:
         info(f"pre-push hook: {'installed' if ours else 'not installed'} ({hook})")
+
+
+def cmd_docs(args: argparse.Namespace) -> None:
+    builder = [sys.executable, str(ROOT / "tools/docs/build_docs.py")]
+    if args.check:
+        cmd = builder + ["--check"] + (["--changed-since", args.changed_since] if args.changed_since else [])
+        sys.exit(run_cmd(cmd, check=False))
+    run_cmd(builder)
+    index = BUILD_ROOT / "docs" / "index.html"
+    if args.open:
+        if IS_WINDOWS:
+            os.startfile(index)  # type: ignore[attr-defined]
+        elif host_key() == "macos":
+            subprocess.call(["open", str(index)])
+        else:
+            subprocess.call(["xdg-open", str(index)])
 
 
 def cmd_presets(_: argparse.Namespace) -> None:
@@ -508,6 +526,10 @@ def main() -> None:
     p.add_argument("--all", action="store_true", help="delete the whole build/ directory")
     add("presets", cmd_presets, help_text="list presets")
     add("gui", cmd_gui, help_text="open the graphical launcher")
+    p = add("docs", cmd_docs, help_text="build (or check) the HTML engine manual from docs/manual")
+    p.add_argument("--open", action="store_true", help="open the built manual in a browser")
+    p.add_argument("--check", action="store_true", help="validate pages, links and source coverage")
+    p.add_argument("--changed-since", metavar="REF", help="with --check: changed sources need doc updates")
     p = add("hooks", cmd_hooks, help_text="install a git pre-push hook that runs the unit tests")
     p.add_argument("action", choices=["install", "uninstall", "status"], nargs="?", default="status")
     for p in sub.choices.values():

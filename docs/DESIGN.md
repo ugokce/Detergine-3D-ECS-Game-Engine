@@ -1432,6 +1432,7 @@ tool on top of them, so that the same few commands work on every host:
 | `dg determinism` | Runs the player headless in Debug and Release and fails unless the final state hashes are identical. |
 | `dg clean [--all]`, `dg presets` | Deletes build trees; lists presets. |
 | `dg gui` | Opens the **Detergine Launcher** (below). |
+| `dg docs [--open] [--check]` | Builds the HTML engine manual from `docs/manual/` into `build/docs/`, or validates it (front matter, page template, links, source coverage; `--changed-since <ref>` requires doc updates for changed sources). |
 | `dg mcp install \| serve \| status` | Writes the project's `.mcp.json` for Claude Code, runs the stdio bridge, or shows connections (§14.5). |
 
 Common options on every command: `--preset P`, `-D NAME=VALUE` (engine CMake options such as `DG_HEADLESS`,
