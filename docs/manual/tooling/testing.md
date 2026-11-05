@@ -181,8 +181,8 @@ conventions, which every `DG_ASSERT` death test uses:
   re-executed child process, so allocations it makes before dying never reach the parent. The only exceptions are the
   two `AsyncLogDeath.ForkedChild...` tests in [LogTest.cpp](tests/core/LogTest.cpp), which use the `fast` style on
   purpose because they test what happens to the logger in a child forked without re-executing. They skip themselves
-  (`GTEST_SKIP`) under ASan and TSan: forking a multithreaded process is unreliable under sanitizers, and on Linux
-  LeakSanitizer's exit-time check in the forked child hung CI. Normal builds on macOS and Linux still run them.
+  (`GTEST_SKIP`) under ThreadSanitizer, which does not support `fork()` with live threads. Every other build runs
+  them, ASan/UBSan included.
 * Match the specific assert text, not just any crash, so the test only passes when the intended contract fired.
 * Put multi-statement misuse in a lambda. `EXPECT_DEATH` is a macro, and commas in the statement would split its
   arguments.

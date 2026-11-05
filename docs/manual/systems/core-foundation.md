@@ -275,9 +275,10 @@ void StartNonBlockingLog() {
   `[warn] log flush timed out; some messages may not have been written yet` to stderr, and an `Error` or `Fatal`
   message is also written synchronously. The line may then appear twice, but it is never lost.
 * **`fork()`** (POSIX only). A child process inherits a logger whose worker thread does not exist in the child.
-  `pthread_atfork` handlers park the inherited logger, which is never destroyed so nothing joins the missing thread,
-  and switch the child to the synchronous fallback. The child may call `init()` to start its own asynchronous logger.
-  Windows has no `fork()` and registers no handlers.
+  `pthread_atfork` handlers switch the child to the synchronous fallback for the rest of its life: every log call writes
+  straight to the console, `flush()` and `shutdown()` only flush stdio, and `init()` only changes the level. The
+  inherited logger is never touched or destroyed, so nothing joins the missing thread. Windows has no `fork()` and
+  registers no handlers.
 
 What a call costs, measured on an Apple Silicon Mac (Release build, idle queue, short messages):
 
@@ -419,6 +420,11 @@ Inside `Log.cpp`:
   Console lines end in a plain `\n`.
 * **Never log through the logger while holding the exclusive lifecycle lock.** `init()` reports an unopenable file
   only after it has released the lock.
+* **Never hold the lifecycle lock across `fork()`.** `std::shared_mutex` is a `pthread_rwlock` on Linux, and glibc
+  identifies the writer by thread id. The child's thread has a new id, so unlocking an inherited write lock in the child
+  is taken as a reader unlock, corrupts the lock, and the next lock hangs forever (this hung Linux CI; macOS does not
+  track the owner). The fork handlers only hold the plain fallback mutex, the child gets a fresh one, and the child
+  never touches the lifecycle lock again.
 * **Platform code stays guarded.** The `pthread_atfork` hooks are inside `#if !DG_PLATFORM_WINDOWS` and the logcat
   sink inside `#if DG_PLATFORM_ANDROID`, both in `Log.cpp`.
 
@@ -613,11 +619,11 @@ What covers the pieces on this page:
 | `LogLevels.ParseAndNameRoundTrip` | `parseLevel` / `levelName` round trip, `warning`, case sensitivity |
 | `AsyncLogDeath.AssertionMessageSurvivesAbort` | The assert message is written behind 5000 queued messages before `abort()` (asserts enabled) |
 | `AsyncLogDeath.AssertionMessageSurvivesLevelOff` | The assert message is written at `Level::Off` (asserts enabled) |
-| `AsyncLogDeath.ForkedChildLogsSynchronouslyAndExitsCleanly` | A forked child logs `error()` fast and exits without `std::terminate` (POSIX only; also in Release; skipped under ASan/TSan) |
-| `AsyncLogDeath.ForkedChildAssertionMessageSurvivesAbort` | A forked child's assert message is written (POSIX only, asserts enabled; skipped under ASan/TSan) |
+| `AsyncLogDeath.ForkedChildLogsSynchronouslyAndExitsCleanly` | A forked child logs `error()` fast and exits without `std::terminate` (POSIX only; also in Release; skipped under TSan) |
+| `AsyncLogDeath.ForkedChildAssertionMessageSurvivesAbort` | A forked child's assert message is written (POSIX only, asserts enabled; skipped under TSan) |
 
 The fork tests use the `fast` death-test style on purpose: it forks without re-executing the binary, which is the
-situation they test. The two timing bounds in `NonBlockingQueueDropsMessagesButNeverFlushesOrErrors` are far above the
+situation they test. They skip under ThreadSanitizer, which does not support `fork()` with live threads. The two timing bounds in `NonBlockingQueueDropsMessagesButNeverFlushesOrErrors` are far above the
 normal cost (milliseconds) and far below the 5-second flush timeout, which is what the test guards against. The app
 smoke tests (`player.smoke`, `server.smoke`, `editor.smoke`) also exercise logging and the build-info banner.
 

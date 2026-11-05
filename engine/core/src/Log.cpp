@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <shared_mutex>
 #include <vector>
 
@@ -149,9 +150,10 @@ struct State {
     std::mutex fallbackMutex;
     std::once_flag hooksOnce;
 
-    // Loggers inherited by a forked child, whose worker thread does not exist there. Destroying them would join that
-    // missing thread (std::terminate), so they are parked here forever.
-    std::vector<std::shared_ptr<void>> abandoned;
+    // This process is a fork() child. Logging is then synchronous console output, and nothing touches `lifecycle` or
+    // the inherited loggers again: their worker thread does not exist here, and the lock may be unusable (see
+    // forkChild()). State is never destroyed, so the inherited loggers are never joined either.
+    std::atomic<bool> forked{false};
 };
 
 // Intentionally never destroyed, so logging keeps working from other static destructors at exit.
@@ -238,36 +240,25 @@ std::optional<std::string> startLocked(State& s, const Config& config) {
 
 #if !DG_PLATFORM_WINDOWS
 // fork() copies only the calling thread, so a child inherits a logger whose worker does not exist: queued messages
-// would never be written and destroying the pool would join a missing thread. The child therefore parks the inherited
-// logger and falls back to synchronous console output (init() may start a fresh logger in the child). Holding the
-// lifecycle and fallback locks across fork() keeps them consistent in both processes.
+// would never be written and destroying the pool would join a missing thread. The child therefore switches to
+// synchronous console output for the rest of its life and never touches the logger or `lifecycle` again.
+//
+// `lifecycle` must not be locked across fork() and unlocked in the child: glibc's rwlock identifies the writer by
+// thread id, the child's thread has a new id, so the child's unlock is taken for a reader unlock, corrupts the lock,
+// and the next lock hangs forever (seen on Linux CI; macOS does not track the owner). Only the plain fallback mutex is
+// held across fork(), and the child gets a fresh one instead of unlocking the inherited copy.
 void forkPrepare() {
-    State& s = state();
-    s.lifecycle.lock();
-    s.fallbackMutex.lock();
+    state().fallbackMutex.lock(); // no thread may be half-way through a fallback write when the child is created
 }
 
 void forkParent() {
-    State& s = state();
-    s.fallbackMutex.unlock();
-    s.lifecycle.unlock();
+    state().fallbackMutex.unlock();
 }
 
 void forkChild() {
     State& s = state();
-    if (s.logger) {
-        s.abandoned.push_back(std::move(s.logger));
-        s.abandoned.push_back(std::move(s.urgent));
-        s.abandoned.push_back(std::move(s.pool));
-        s.abandoned.push_back(std::move(s.fence));
-        for (spdlog::sink_ptr& sink : s.sinks) {
-            s.abandoned.push_back(std::move(sink));
-        }
-        s.sinks.clear();
-        s.stopped.store(true, std::memory_order_relaxed);
-    }
-    s.fallbackMutex.unlock();
-    s.lifecycle.unlock();
+    new (&s.fallbackMutex) std::mutex(); // the inherited mutex is locked by a thread that does not exist here
+    s.forked.store(true, std::memory_order_release);
 }
 #endif
 
@@ -311,6 +302,10 @@ void lazyInit() {
 
 std::expected<void, std::string> init(const Config& config) {
     State& s = state();
+    if (s.forked.load(std::memory_order_acquire)) {
+        s.level.store(config.level, std::memory_order_relaxed);
+        return {}; // a forked child keeps logging synchronously to the console
+    }
     // Registered before the first start, so a fork can never observe a running logger without the handlers.
     installProcessHooks(s);
     std::optional<std::string> problem;
@@ -332,6 +327,11 @@ std::expected<void, std::string> init(const Config& config) {
 
 void shutdown() {
     State& s = state();
+    if (s.forked.load(std::memory_order_acquire)) {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        return;
+    }
     const std::unique_lock lock(s.lifecycle);
     stopLocked(s);
     s.stopped.store(true, std::memory_order_relaxed);
@@ -339,6 +339,11 @@ void shutdown() {
 
 void flush() {
     State& s = state();
+    if (s.forked.load(std::memory_order_acquire)) {
+        std::fflush(stdout);
+        std::fflush(stderr);
+        return;
+    }
     const std::shared_lock lock(s.lifecycle);
     if (!s.logger) {
         std::fflush(stdout);
@@ -388,6 +393,10 @@ void writeUnfiltered(Level messageLevel, std::string_view message) {
         return;
     }
     State& s = state();
+    if (s.forked.load(std::memory_order_acquire)) {
+        writeFallback(messageLevel, message);
+        return;
+    }
     if (!s.started.load(std::memory_order_acquire) && !s.stopped.load(std::memory_order_relaxed)) {
         lazyInit();
     }

@@ -17,18 +17,17 @@
 #include <thread>
 #include <vector>
 
-// fork() from a multithreaded process is not reliable under sanitizers: on Linux, LeakSanitizer's exit-time check in
-// the forked child hung CI for an hour. The fork tests below therefore skip under ASan/TSan; every normal build
-// (macOS, Linux) still runs them.
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-    #define DG_TEST_UNDER_SANITIZER 1
+// ThreadSanitizer does not support fork() from a multithreaded process, so the fork tests below skip under TSan.
+// They run everywhere else, including ASan/UBSan builds.
+#if defined(__SANITIZE_THREAD__)
+    #define DG_TEST_UNDER_TSAN 1
 #elif defined(__has_feature)
-    #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
-        #define DG_TEST_UNDER_SANITIZER 1
+    #if __has_feature(thread_sanitizer)
+        #define DG_TEST_UNDER_TSAN 1
     #endif
 #endif
-#ifndef DG_TEST_UNDER_SANITIZER
-    #define DG_TEST_UNDER_SANITIZER 0
+#ifndef DG_TEST_UNDER_TSAN
+    #define DG_TEST_UNDER_TSAN 0
 #endif
 
 namespace {
@@ -391,10 +390,12 @@ TEST(AsyncLogDeath, AssertionMessageSurvivesLevelOff) {
 #if !DG_PLATFORM_WINDOWS
 // Regression: a forked child inherited a logger whose worker thread does not exist there. error() then waited 5 s and
 // lost its message, and exit() in the child ended in std::terminate when the atexit shutdown joined the missing
-// thread. The "fast" death-test style forks without exec, exactly like that.
+// thread. Later, on Linux only, the child hung forever: it unlocked the lifecycle rwlock the fork handler had locked,
+// and glibc treats an unlock from a different thread id as a reader unlock. The "fast" death-test style forks without
+// exec, exactly like that.
 TEST(AsyncLogDeath, ForkedChildLogsSynchronouslyAndExitsCleanly) {
-    if (DG_TEST_UNDER_SANITIZER) {
-        GTEST_SKIP() << "fork() with live threads is unreliable under sanitizers";
+    if (DG_TEST_UNDER_TSAN) {
+        GTEST_SKIP() << "ThreadSanitizer does not support fork() with live threads";
     }
     const LoggerReset reset;
     GTEST_FLAG_SET(death_test_style, "fast");
@@ -417,8 +418,8 @@ TEST(AsyncLogDeath, ForkedChildLogsSynchronouslyAndExitsCleanly) {
 
     #if DG_ASSERTS_ENABLED
 TEST(AsyncLogDeath, ForkedChildAssertionMessageSurvivesAbort) {
-    if (DG_TEST_UNDER_SANITIZER) {
-        GTEST_SKIP() << "fork() with live threads is unreliable under sanitizers";
+    if (DG_TEST_UNDER_TSAN) {
+        GTEST_SKIP() << "ThreadSanitizer does not support fork() with live threads";
     }
     const LoggerReset reset;
     GTEST_FLAG_SET(death_test_style, "fast");
