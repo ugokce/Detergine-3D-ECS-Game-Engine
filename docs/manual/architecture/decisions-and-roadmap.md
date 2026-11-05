@@ -89,7 +89,6 @@ Done:
 
 Remaining:
 
-* Get Windows x64 CI green.
 * spdlog sinks, Tracy, and xxHash. xxHash replaces FNV-1a for state hashes, which changes every recorded golden hash.
 
 ## Roadmap phases

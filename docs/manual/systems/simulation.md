@@ -160,7 +160,7 @@ Re-record only when you changed the sim on purpose:
 5. Say in the commit message that the sim golden hash was re-recorded and why. Update the golden-hash table in
    `docs/IMPLEMENTATION_PLAN.md` and the value quoted on this page.
 6. Push and let CI confirm that every host reproduces the new value. CI runs the check on macOS ARM64, Linux x64 and
-   Windows x64, but the Windows x64 job is still being fixed, so check its result explicitly. If you
+   Windows x64. If you
    could not check both x64 and ARM64, say so in the PR.
 
 > **Warning:** Never re-record to make a failure on one platform go away. A golden that differs between platforms is a
@@ -242,7 +242,7 @@ Run them:
 ```
 
 The golden hash must be reproduced exactly by every platform, architecture and build configuration. CI runs the check
-on macOS ARM64, Linux x64 and Windows x64, and also runs `dg determinism`. So far the golden hash is confirmed on
-macOS ARM64 and Linux x64; the Windows x64 job is still being fixed. The app smoke tests (`player.smoke`,
+on macOS ARM64, Linux x64 and Windows x64, and also runs `dg determinism`. The golden hash is confirmed on
+macOS ARM64, Linux x64 and Windows x64. The app smoke tests (`player.smoke`,
 `server.smoke`, `editor.smoke`) step this simulation through the runtime loop; see
 [Runtime and apps](runtime-and-apps.md) and [Testing](../tooling/testing.md).

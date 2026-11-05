@@ -187,9 +187,9 @@ Two checks combine into the cross-architecture proof:
    fails with `DESYNC` unless the two `state-hash=` lines match. This catches configuration-dependent code on each
    host.
 
-> **Warning:** As of implementation plan step 2, CI is green on macOS ARM64, Linux x64 (the golden hashes reproduce
-> bit for bit on x64), Linux ASan + UBSan and the Android build. Windows x64 (clang-cl with the MSVC standard library)
-> is not yet green, so the x64 goldens are verified only with Clang and libstdc++ on Linux. Android ARM64 builds but does not run tests. Replay-file
+> **Note:** CI is green on macOS ARM64, Linux x64 (Clang + libstdc++), Windows x64 (clang-cl + MSVC standard library),
+> Linux ASan + UBSan and the Android build: every golden hash reproduces bit for bit on ARM64 and on both x64
+> toolchains, in Debug, Development and Release. Android ARM64 builds but does not run tests yet. Replay-file
 > determinism jobs across all platforms, including the headless server, are designed (`docs/DESIGN.md` §5.4) but not
 > built.
 
