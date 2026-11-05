@@ -1,0 +1,120 @@
+# Build and test the engine on every push to main and every pull request (docs/IMPLEMENTATION_PLAN.md step 2).
+# Each job uses the same `dg` commands developers run locally, so CI and local results mean the same thing.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-cache
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS ARM64
+            os: macos-15
+            preset: macos-arm64
+          - name: Windows x64
+            os: windows-2025
+            preset: windows-x64-vs2022
+          - name: Linux x64
+            os: ubuntu-24.04
+            preset: linux-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja pkgconf
+
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang pkg-config
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ matrix.preset }}-${{ hashFiles('vcpkg.json', 'tools/dg.py') }}
+          restore-keys: vcpkg-${{ matrix.preset }}-
+
+      - name: Bootstrap vcpkg
+        shell: bash
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          python tools/dg.py setup --vcpkg --yes
+
+      - name: Test Debug
+        run: python tools/dg.py test debug --preset ${{ matrix.preset }} -D DG_WARNINGS_AS_ERRORS=ON
+
+      - name: Test Development
+        run: python tools/dg.py test dev --preset ${{ matrix.preset }}
+
+      - name: Test Release
+        run: python tools/dg.py test release --preset ${{ matrix.preset }}
+
+      # Debug and Release must produce bit-identical simulation state (CLAUDE.md determinism rules). The golden-hash
+      # tests above additionally pin every platform to the same values as macOS ARM64.
+      - name: Determinism (Debug vs Release)
+        run: python tools/dg.py determinism --preset ${{ matrix.preset }}
+
+  sanitizers:
+    name: Linux x64 ASan + UBSan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang pkg-config
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-linux-x64-${{ hashFiles('vcpkg.json', 'tools/dg.py') }}
+          restore-keys: vcpkg-linux-x64-
+      - name: Bootstrap vcpkg
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          python tools/dg.py setup --vcpkg --yes
+      - name: Test Debug with sanitizers
+        run: >-
+          python tools/dg.py test debug --preset linux-x64
+          -D DG_ENABLE_ASAN=ON -D DG_ENABLE_UBSAN=ON -D DG_WARNINGS_AS_ERRORS=ON
+
+  android:
+    name: Android ARM64 (build only)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang pkg-config
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-android-arm64-${{ hashFiles('vcpkg.json', 'tools/dg.py') }}
+          restore-keys: vcpkg-android-arm64-
+      - name: Bootstrap vcpkg
+        run: |
+          mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
+          python tools/dg.py setup --vcpkg --yes
+      # ANDROID_NDK_LATEST_HOME is set by the runner image (a shell variable, not a workflow env value).
+      - name: Build Release
+        run: ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME" python tools/dg.py build release --preset android-arm64

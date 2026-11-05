@@ -1,8 +1,23 @@
 # Target helpers. Every engine target goes through these so flags, warnings and determinism settings stay uniform.
 
+# Strict floating point for every engine target (CLAUDE.md determinism rule 3). Applied engine-wide, not only to sim
+# targets: an inline math function compiled with different FP flags in two translation units is an ODR hazard, and the
+# linker may keep the contracted (FMA) copy for sim code. Identical in every configuration, so Debug == Release.
+function(dg_strict_fp target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /fp:precise)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang") # clang-cl contracts to FMA unless told not to
+            target_compile_options(${target} PRIVATE /clang:-ffp-contract=off)
+        endif()
+    else()
+        target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
+    endif()
+endfunction()
+
 # Common settings for every engine target.
 function(dg_configure_target target)
     target_compile_features(${target} PUBLIC cxx_std_23)
+    dg_strict_fp(${target})
 
     if(MSVC) # also clang-cl
         target_compile_options(${target} PRIVATE /W4 /utf-8 /permissive-)
@@ -19,17 +34,10 @@ function(dg_configure_target target)
     endif()
 endfunction()
 
-# Strict floating-point settings for deterministic simulation code (CLAUDE.md determinism rule 3).
-# These flags must be identical in every configuration so Debug and Release builds produce bit-identical sim results.
+# Marks deterministic simulation code. The strict FP flags already come from dg_configure_target; the property lets
+# tooling (and future checks such as banned-function lints) find sim targets.
 function(dg_sim_target target)
-    if(MSVC)
-        target_compile_options(${target} PRIVATE /fp:precise)
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang") # clang-cl contracts to FMA unless told not to
-            target_compile_options(${target} PRIVATE /clang:-ffp-contract=off)
-        endif()
-    else()
-        target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
-    endif()
+    dg_strict_fp(${target})
     set_property(TARGET ${target} PROPERTY DG_SIM_TARGET ON)
 endfunction()
 

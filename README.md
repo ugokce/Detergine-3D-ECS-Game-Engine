@@ -11,13 +11,15 @@ built-in lockstep/rollback multiplayer. Targets Windows x64, macOS ARM64, Androi
 Requirements: CMake 3.28+, Python 3.9+, Git, and a compiler:
 - macOS: Xcode or the Xcode command line tools (Apple Silicon)
 - Windows: Visual Studio 2022 with the "C++ Clang tools for Windows" component
+- macOS/Linux: `pkg-config`, which vcpkg needs (`brew install pkgconf` / `sudo apt install pkg-config`)
 - Optional: Ninja for faster builds (`brew install ninja` / `winget install Ninja-build.Ninja`)
 
 ```bash
-./dg setup            # check the toolchain
+./dg setup --vcpkg    # check the toolchain and bootstrap the pinned vcpkg (once)
 ./dg run debug        # build + run the editor in Debug
 ./dg run release      # ... or in Release
-./dg test             # build + run the tests
+./dg test             # build + run the GoogleTest suites, smoke and determinism tests
+./dg hooks install    # optional: run the unit tests before every git push
 ./dg generate --ide   # create and open an Xcode / Visual Studio project
 ```
 

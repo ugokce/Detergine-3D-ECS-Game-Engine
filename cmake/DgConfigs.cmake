@@ -25,6 +25,11 @@ endforeach()
 # Imported packages (vcpkg) only ship Debug/Release; Development links their optimized variant.
 set(CMAKE_MAP_IMPORTED_CONFIG_DEVELOPMENT RelWithDebInfo Release "")
 
+# Xcode turns on libc++ debug hardening at -O0. That changes libc++'s ABI tags, so our Debug objects and the
+# vcpkg-built libraries (built without hardening, as are all Ninja builds) end up mixing incompatible inline
+# std::vector code at link time (a heap overflow inside GoogleTest, found under ASan). Keep one mode everywhere.
+set(CMAKE_XCODE_ATTRIBUTE_CLANG_CXX_STANDARD_LIBRARY_HARDENING "none")
+
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 include(CheckIPOSupported)

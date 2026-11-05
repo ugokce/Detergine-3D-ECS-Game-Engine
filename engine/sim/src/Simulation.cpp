@@ -27,11 +27,16 @@ void bounce(f32& position, f32& velocity, f32 limit) {
     }
 }
 
+// Asserts before the value is used: the fixed delta time is computed in the member initializer list.
+u32 checkedTickRate(u32 tickRate) {
+    DG_ASSERT(tickRate > 0);
+    return tickRate;
+}
+
 } // namespace
 
 Simulation::Simulation(const SimConfig& simConfig)
-    : config(simConfig), dt(1.0f / static_cast<f32>(simConfig.tickRate)), rng(simConfig.seed) {
-    DG_ASSERT(config.tickRate > 0);
+    : config(simConfig), dt(1.0f / static_cast<f32>(checkedTickRate(simConfig.tickRate))), rng(simConfig.seed) {
     DG_ASSERT(config.bodyCount > 0);
 
     bodies.resize(config.bodyCount);

@@ -50,7 +50,7 @@ nondeterminism in anything that touches the simulation.
 | Concern | Choice | License | Notes |
 |---|---|---|---|
 | Build system | **CMake ≥ 3.30** + Ninja | BSD | Presets (`CMakePresets.json`) per platform/config. |
-| Dependencies | **vcpkg** (manifest mode) | MIT | Pinned baseline; custom overlay ports for engine-patched libs. CPM.cmake as fallback for header-only libs. |
+| Dependencies | **vcpkg** (manifest mode) | MIT | Pinned release (`dg setup --vcpkg` clones tag `VCPKG_RELEASE` in `tools/dg.py`) + matching `builtin-baseline`; static triplets (`arm64-osx-dg` overlay targeting macOS 14.0, `x64-windows-static-md`, `x64-linux`, `arm64-android`); overlay ports for engine-patched libs. |
 | Language | **C++23** baseline; selected C++26 features behind feature-test macros | — | See §2.9. |
 | Windowing / input / platform | **SDL3** | Zlib | Windows, macOS, Android, iOS. Vulkan surface creation, gamepads, touch, IME, Android activity glue. |
 | Job system | **enkiTS** (or Taskflow) | Zlib / MIT | Task graph with dependencies; pinned threads for render/IO. Wrapped behind `dg::jobs`. |
@@ -62,7 +62,7 @@ nondeterminism in anything that touches the simulation.
 | Text serialization | **rapidyaml** (assets/scenes), **yyjson** (configs/tools) | MIT | YAML chosen for diff-friendly scenes/prefabs, like Unity. |
 | MCP server | **Custom** JSON-RPC 2.0 layer (yyjson) + **cpp-httplib** for Streamable HTTP | — / MIT | Pinned to MCP 2025-11-25 behind a protocol adapter; no official C++ MCP SDK exists (§14.5). |
 | File watching | **efsw** | MIT | Asset + Lua hot reload. |
-| Testing | **doctest** (unit), custom determinism harness | MIT | |
+| Testing | **GoogleTest** (unit, death tests, typed/parameterized tests, GMock) + CTest; golden-hash determinism suites | BSD-3 | Every `TEST` registered individually via `gtest_discover_tests`; CI on GitHub Actions (§16). |
 | Crash reporting | **sentry-native** (crashpad backend) | MIT | Optional plugin. |
 
 ### 2.2 Rendering
@@ -111,7 +111,7 @@ nondeterminism in anything that touches the simulation.
 
 | Concern | Choice | License | Notes |
 |---|---|---|---|
-| Transport | **GameNetworkingSockets** (Valve) *or* **ENet** | BSD-3 / MIT | Reliable+unreliable channels, encryption (GNS). ENet is the light default; GNS is a plugin for Steam / relay. |
+| Transport | **ENet** (default) / GameNetworkingSockets (plugin) | MIT / BSD-3 | ENet is the default UDP transport (decision 3, §18); GNS is an optional plugin for encryption, Steam, and relays. |
 | Netcode model | **Custom**: deterministic lockstep + rollback (GGPO-style) | — | GGPO (MIT) used as a design reference. |
 | Serialization | Custom bit-packed input streams | — | Inputs only; no state replication in deterministic mode. |
 
@@ -328,7 +328,7 @@ struct DG_REFLECT(Sim) Health {
                 ▼
 ┌─────────────────────────────┐   read-only snapshot / events   ┌──────────────────────────────┐
 │   SIM WORLD (deterministic) │ ──────────────────────────────► │ PRESENTATION WORLD (free)    │
-│  fixed tick (e.g. 30/60 Hz) │                                  │ variable frame rate          │
+│  fixed tick (30 Hz default) │                                  │ variable frame rate          │
 │  ECS components tagged Sim  │                                  │ interpolation, VFX, audio,   │
 │  Jolt/Box2D deterministic   │                                  │ animation pose, UI, camera   │
 │  Luau sim scripts           │                                  │ Luau view scripts            │
@@ -346,7 +346,7 @@ struct DG_REFLECT(Sim) Health {
 
 | Source | Mitigation |
 |---|---|
-| Floating-point differences x64 ↔ ARM64 (FMA contraction, x87, FTZ/DAZ, compiler reordering) | Sim code is compiled with `-ffp-contract=off`, `-fno-fast-math`, and `/fp:precise` (clang-cl). No x87. FTZ/DAZ state is set explicitly on sim threads. Jolt uses `JPH_CROSS_PLATFORM_DETERMINISTIC`. |
+| Floating-point differences x64 ↔ ARM64 (FMA contraction, x87, FTZ/DAZ, compiler reordering) | **All engine code** is compiled with `-ffp-contract=off`, `-fno-fast-math`, and `/fp:precise` (clang-cl), so inline math is identical in sim and non-sim translation units (no ODR-mixed codegen). No x87. No `std::fma`. FTZ/DAZ state is set explicitly on sim threads. Jolt uses `JPH_CROSS_PLATFORM_DETERMINISTIC`. |
 | Transcendentals (`sin`, `cos`, `pow`, `sqrt` OK; `exp`, `atan2`...) differ across libms | `dg::detmath`: our own implementations (or Jolt's) for all non-IEEE-exact functions. `std::` math is forbidden in sim code (enforced by a lint). |
 | Gameplay numeric drift / design-friendliness | `dg::fixed32` (Q16.16) and `dg::fixed64` (Q32.32) types are available for gameplay values (HP, currency, timers). Vectors/physics use deterministic float. |
 | Iteration order of hash maps / pointer-keyed containers | No `unordered_*` **iteration** in sim. Use sorted vectors, `std::flat_map`, or dense arrays by entity index. ECS chunk/entity order is deterministic. |
@@ -446,6 +446,23 @@ return dg.system {
 * Sim scripts reload by rebuilding the sim world from the last snapshot. In networked sessions this is disabled
   (or uses a coordinated reload with a script hash bump).
 
+### 6.5 Native C++ gameplay modules (optional)
+
+Luau is the primary gameplay language, and a complete game can be written without C++. When a project needs native
+code (hot loops, custom sim systems, middleware glue), it adds a **game module**:
+
+* C++ classes, components, systems, and free functions annotated with `DG_REFLECT` / `DG_PROPERTY` /
+  `DG_FUNCTION(ScriptVisible)` in the project's `Source/` folder.
+* `dg_add_game_module(<Project>Game SOURCES ...)` compiles them into a **static library** with the engine's
+  determinism flags (sim code goes through the same `SIM` rules, §5). `dg-reflect` generates both the reflection data
+  and the **Luau bindings**, so native types and functions appear in `dg.d.luau` next to the engine API.
+* The static library is **linked into the game binaries**: player, headless server, and the project's editor build.
+  There is no runtime loading of game code in shipping builds, which matches the static-plugin rule for mobile and
+  shipping (§4.5). Faster editor iteration through a dynamically loaded development build of the module is a later
+  optimization.
+* Native sim systems follow every determinism rule and contribute to the session's determinism manifest (§15.6),
+  exactly like Luau sim scripts.
+
 ---
 
 ## 7. ECS (`dg::ecs`)
@@ -494,7 +511,7 @@ return dg.system {
 * The presentation layer **extracts** render data into a `RenderWorld` (double-buffered) so that rendering runs one
   frame behind the game thread without locks.
 * **Desktop pipeline**: GPU-driven visibility (meshlets via meshoptimizer, compute culling — frustum + Hi-Z occlusion,
-  `vkCmdDrawIndexedIndirectCount`), visibility buffer or deferred G-buffer, clustered lighting, PBR (metallic/roughness,
+  `vkCmdDrawIndexedIndirectCount`), **visibility buffer** (decision 4, §18) with deferred material passes, clustered lighting, PBR (metallic/roughness,
   glTF-compatible), cascaded/virtual shadow maps, TAA/FSR, bloom, tone mapping (ACES / AgX), SSAO / GTAO, SSR.
 * **Mobile pipeline** (Android, optionally iOS): forward+ with tile-based light culling, subpass-friendly
   (render-pass load/store ops tuned for TBDR), ASTC textures, half-precision shading, baked or probe GI.
@@ -1341,8 +1358,8 @@ worlds. It is not the default and is not covered by the determinism guarantees.
 | `Release` (= Shipping) | ❌ | ✅ (+LTO) | ❌ | ❌ | Static plugins, stripped symbols, cooked paks only. |
 | `Server` profile (`DG_HEADLESS`, any config) | ❌ (opt-in) | ✅ (+LTO) | optional | ❌ | Headless dedicated server, level-scoped cook (§16.1). |
 
-* **The determinism compile flags are identical in all configs** for sim translation units (`dg_sim_target()` CMake
-  helper). This means Debug and Shipping builds can play together.
+* **The determinism compile flags are identical in all configs** and applied engine-wide by `dg_configure_target()`;
+  sim targets are additionally marked with `dg_sim_target()`. This means Debug and Shipping builds can play together.
 * **`dg-package`** CLI (also driven from Build Settings): it cooks for the target platform, builds the player with
   static plugins, and assembles:
   * Windows: `Game.exe` + `*.dgpak` + redistributables.
@@ -1484,13 +1501,18 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 | MCP spec churn (sessions, tasks moving to extensions in newer drafts) | Pinned revision with version negotiation; differences isolated in the protocol adapter; conformance tests against the official MCP inspector. |
 | Scope (an engine of Unity+UE breadth) | Strict phase gating; every module behind interfaces so features can be delayed without refactors. |
 
-**Open questions:**
+**Decisions** (resolved 2026-11-05; formerly open questions):
 
-1. Default tick rate (30 vs 60 Hz), and whether it is per-project configurable. *(Proposed: per-project, default 30.)*
-2. Lua-first vs C++-first gameplay template for new projects.
-3. ENet vs GameNetworkingSockets as the default transport.
-4. Visibility buffer vs deferred G-buffer as the desktop default.
-5. Default server mode for new projects (`relay` vs `verify`). *(Proposed: `verify` once the headless build is stable.)*
+1. **Tick rate**: **30 Hz by default**, configurable per project in project settings (`ProjectSettings.sim.tickRate`).
+2. **Gameplay language**: **Luau-first**. Developers must be able to write a complete game in Luau without any C++.
+   Native C++ gameplay code is optional: classes and functions compiled into a static game module and bound to Luau
+   (§6.5). C++ runs the engine itself: simulation core, physics, rendering, networking backend.
+3. **Default transport**: **ENet**. GameNetworkingSockets remains an optional plugin (Steam, relays, encryption).
+4. **Desktop renderer**: **visibility buffer** (deferred material evaluation over the visibility buffer). The mobile
+   tier stays forward+.
+5. **Default server mode**: `relay` until the headless build is stable, then **`verify`** becomes the default for new projects.
+
+**Open questions:** none at the moment.
 
 ---
 

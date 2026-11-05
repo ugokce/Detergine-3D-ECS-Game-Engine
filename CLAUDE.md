@@ -1,9 +1,16 @@
 # CLAUDE.md — Detergine Engine
 
 Detergine is a **natively deterministic**, modular 3D/2D game engine. Its core systems, physics, and rendering are
-in **C++23** with a **Vulkan** renderer. Gameplay is written in **Luau (Lua)** or C++ on a deterministic ECS
-simulation, which makes lockstep and rollback multiplayer work out of the box. The editor is ImGui-based and modeled
-on Unity.
+in **C++23** with a **Vulkan** renderer. Gameplay is written in **Luau (Lua)** on a deterministic ECS simulation,
+which makes lockstep and rollback multiplayer work out of the box; optional native C++ gameplay code is bound to Luau.
+The editor is ImGui-based and modeled on Unity.
+
+**Implementation progress:** [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Work in its steps, in
+order, and keep its status column current.
+
+**Settled decisions** (DESIGN.md §18): 30 Hz default sim tick rate (per-project setting) · Luau-first gameplay, and a
+whole game must be writable without C++ · ENet default transport · visibility-buffer desktop renderer · `verify`
+becomes the default server mode once the headless build is stable (`relay` until then).
 
 **Full architecture: [`docs/DESIGN.md`](docs/DESIGN.md). Read the relevant section before changing a subsystem.**
 Architectural decisions go into `docs/adr/NNNN-title.md`. Update `DESIGN.md` when a decision changes the design.
@@ -26,7 +33,7 @@ Never add platform-specific code outside `engine/platform/` (or `#if` blocks in 
 CMake + Ninja + vcpkg (manifest) · SDL3 · Vulkan (volk, VMA, vk-bootstrap) · Slang shaders · Dear ImGui (docking) +
 ImGuizmo/ImPlot · Jolt Physics (cross-platform deterministic) · Box2D v3 · Luau · enkiTS · fastgltf · ufbx ·
 meshoptimizer · KTX2/Basis Universal · FreeType/HarfBuzz/msdf-atlas-gen · FidelityFX Parallel Sort · Yoga · miniaudio + Steam Audio + Opus · ozz-animation ·
-Recast/Detour · ENet / GameNetworkingSockets · rapidyaml · zstd/LZ4 · xxHash · Tracy · spdlog · doctest.
+Recast/Detour · ENet / GameNetworkingSockets · rapidyaml · zstd/LZ4 · xxHash · Tracy · spdlog · GoogleTest.
 
 Adding a new third-party dependency requires a permissive license (MIT/BSD/Zlib/Apache-2/PD), all-platform support,
 a vcpkg port (or vendored copy in `third_party/` with its LICENSE), and a line in DESIGN.md §2. **No GPL/LGPL in the engine.**
@@ -39,8 +46,10 @@ must follow these rules:
 
 1. **No wall-clock time, no OS calls, no file IO, no threads you spawn yourself.** The sim sees only `tick`, fixed `dt`, and inputs.
 2. **No `std::` transcendental math** (`sin`, `cos`, `atan2`, `exp`, `pow`, …). Use `dg::detmath`. `+ - * / sqrt` are fine.
-3. **No `-ffast-math`, no FMA contraction.** Sim targets are declared with `dg_sim_target()` in CMake, which sets the
-   strict FP flags. Do not override them.
+3. **No `-ffast-math`, no FMA contraction, no `std::fma`.** Strict FP flags (`-ffp-contract=off` / `/fp:precise`)
+   apply to **every** engine target through `dg_configure_target()` (one set of flags avoids ODR-mixed inline math).
+   Sim targets are also marked with `dg_sim_target()`. Never override these flags. Use `dg::fixed32` / `dg::fixed64`
+   (`dg/math/Fixed.h`) for gameplay values that must be exact.
 4. **No iteration over `unordered_*` containers, and no ordering by pointer/address.** Use sorted/dense containers or entity order.
 5. **No `rand()`, `std::random_device`, or time seeds.** Use `dg::sim::Rng`, which lives in the sim state.
 6. **All sim state lives in ECS components** (or registered sim resources) so that snapshots and rollback capture it.
@@ -158,6 +167,10 @@ run them locally on both architectures, say so explicitly in the PR/summary.
 
 ## Lua (Luau) conventions
 
+- **Luau-first**: every gameplay feature must be reachable from Luau. C++ gameplay code is optional and lives in a
+  project's static **game module** (`dg_add_game_module`, DESIGN.md §6.5). Its reflected classes and functions are
+  bound to Luau automatically, and it is linked into the player, server, and project editor builds.
+
 - `--!strict` at the top of every engine-provided and template script.
 - File suffix shows where it runs: `*.sim.luau` (deterministic), `*.view.luau` (presentation), `*.editor.luau` (editor tooling).
 - Prefer ECS-style `dg.system { phase, query, ... }` over per-object update callbacks.
@@ -183,6 +196,15 @@ Use the `dg` tool (`./dg` on macOS/Linux, `dg` on Windows; DESIGN.md §16.2). It
   **and** `ENGINE_OPTIONS` in `dg.py`, so that they appear in the launcher.
 
 - Configurations: `Debug`, `Development` (optimized + asserts, the default), `Release` (= Shipping: LTO, no asserts).
+- Sanitizers: `-D DG_ENABLE_ASAN=ON -D DG_ENABLE_UBSAN=ON` (also in the launcher). New code must be clean under both.
+- **Tests use GoogleTest** (vcpkg `gtest`). Add suites with `dg_add_test(<target> SOURCES ... DEPS ... [LABELS
+  determinism])` in `tests/CMakeLists.txt`. Every `TEST` is registered with CTest individually
+  (`<target>.<Suite>.<Test>`), so `./dg test -L determinism` or `ctest -R HandlePool` select subsets. Use typed
+  `EXPECT_EQ`/`EXPECT_NEAR` (not `EXPECT_TRUE(a == b)`), compare floats **bitwise** where exactness matters, and cover
+  `DG_ASSERT` paths with `EXPECT_DEATH` inside `#if DG_ASSERTS_ENABLED` (suite names ending in `Death`).
+- Every change must keep `./dg test` green. CI (`.github/workflows/ci.yml`) runs Debug/Development/Release on macOS
+  ARM64, Windows x64, and Linux x64, plus ASan/UBSan, an Android build, and the Debug-vs-Release determinism check, on
+  every push and pull request. `./dg hooks install` adds a pre-push hook that runs the unit tests locally.
 - Raw CMake works too: `cmake --preset macos-arm64-xcode`, then `cmake --build --preset macos-arm64-xcode-debug`.
 - New engine libraries use `dg_add_module(<name> [SIM] ...)`, and apps use `dg_add_app(...)` (`cmake/DgTargets.cmake`).
   Sim code goes in a `SIM` module so it gets the strict FP flags.

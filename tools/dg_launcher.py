@@ -32,7 +32,8 @@ TARGETS = ["all", "editor", "player", "server", "tests"]
 RUN_APPS = ["editor", "player", "server"]
 TEST_LABELS = ["all", "determinism", "smoke"]
 OPTION_DEFAULTS = {"DG_BUILD_EDITOR": True, "DG_BUILD_TESTS": True, "DG_HEADLESS": False,
-                   "DG_WARNINGS_AS_ERRORS": False}
+                   "DG_WARNINGS_AS_ERRORS": False,
+                   "DG_ENABLE_ASAN": False, "DG_ENABLE_UBSAN": False}
 
 # Harmless xcodebuild chatter on machines whose iOS simulator runtime is out of date.
 NOISE = ("CoreSimulator", "DVTErrorPresenter", "Domain: DVTCoreSimulator", "iOSSimulator:", "Recovery Suggestion: Please ensure",

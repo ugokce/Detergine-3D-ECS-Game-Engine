@@ -13,6 +13,7 @@ Run through the launchers in the repository root: `./dg <command>` (macOS/Linux)
   dg clean [--all] [--preset P]      delete a build tree (or all of build/)
   dg presets                         list the CMake presets available on this machine
   dg gui                             open the graphical launcher (all of the above, with every build option)
+  dg hooks [install|uninstall]       git pre-push hook that runs `dg test dev -L unit`
 
 Common options: --preset P, -D NAME=VALUE (e.g. -D DG_HEADLESS=ON), -j N, --verbose, --fresh.
 
@@ -37,6 +38,9 @@ if sys.version_info < (3, 9):
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_ROOT = ROOT / "build"
 IS_WINDOWS = os.name == "nt"
+
+# vcpkg release tag cloned by `dg setup --vcpkg`. Bumping it changes third-party package versions for everyone.
+VCPKG_RELEASE = "2026.10.16"
 
 CONFIGS = {"debug": "Debug", "dev": "Development", "development": "Development", "release": "Release"}
 APPS = {"editor": "dg-editor", "player": "dg-player", "server": "dg-server", "tests": "dg-sim-tests"}
@@ -169,6 +173,8 @@ ENGINE_OPTIONS = {
     "DG_BUILD_TESTS": "Build unit and determinism tests",
     "DG_HEADLESS": "Headless profile: no renderer, audio, UI or editor",
     "DG_WARNINGS_AS_ERRORS": "Treat compiler warnings as errors",
+    "DG_ENABLE_ASAN": "AddressSanitizer",
+    "DG_ENABLE_UBSAN": "UndefinedBehaviorSanitizer",
 }
 
 # Set from the command line in main(): cache definitions (-D), parallel jobs (-j), verbose build output, --fresh.
@@ -242,12 +248,13 @@ def cmd_setup(args: argparse.Namespace) -> None:
     checks = {"cmake": "CMake 3.28+", "git": "Git"}
     if host == "macos":
         checks.update({"ninja": "Ninja (optional; otherwise the Xcode generator is used)",
-                       "xcodebuild": "Xcode command line tools"})
+                       "xcodebuild": "Xcode command line tools",
+                       "pkg-config": "pkg-config (required by vcpkg ports; brew install pkgconf)"})
     elif host == "windows":
         checks.update({"ninja": "Ninja (optional; otherwise Visual Studio is used)",
                        "clang-cl": "LLVM clang-cl (Visual Studio 'C++ Clang tools' component)"})
     else:
-        checks.update({"ninja": "Ninja", "clang++": "Clang"})
+        checks.update({"ninja": "Ninja", "clang++": "Clang", "pkg-config": "pkg-config (required by vcpkg ports)"})
 
     missing = []
     for tool, description in checks.items():
@@ -276,12 +283,14 @@ def cmd_setup(args: argparse.Namespace) -> None:
             answer = input(f"Clone https://github.com/microsoft/vcpkg into {target} and bootstrap it? [y/N] ")
             if answer.strip().lower() not in ("y", "yes"):
                 fail("vcpkg setup cancelled")
-        run_cmd(["git", "clone", "--depth", "1", "https://github.com/microsoft/vcpkg.git", str(target)])
+        # Pinned release so every machine and CI runner resolves identical package versions.
+        run_cmd(["git", "clone", "--depth", "1", "--branch", VCPKG_RELEASE, "https://github.com/microsoft/vcpkg.git",
+                 str(target)])
         script = target / ("bootstrap-vcpkg.bat" if IS_WINDOWS else "bootstrap-vcpkg.sh")
         run_cmd([str(script), "-disableMetrics"])
         info("vcpkg ready; re-run `dg generate` so CMake picks it up")
 
-    required = [t for t in missing if t in ("cmake", "git", "xcodebuild", "clang++")]
+    required = [t for t in missing if t in ("cmake", "git", "xcodebuild", "clang++", "pkg-config")]
     if required:
         fail("missing required tools: " + ", ".join(required))
     info("toolchain OK")
@@ -405,6 +414,37 @@ def cmd_gui(_: argparse.Namespace) -> None:
     dg_launcher.main()
 
 
+HOOK_MARKER = "# installed by `dg hooks install`"
+PRE_PUSH_HOOK = f"""#!/bin/sh
+{HOOK_MARKER}
+# Runs the fast unit and determinism tests before anything leaves this machine. Bypass once with `git push --no-verify`.
+cd "$(git rev-parse --show-toplevel)" || exit 1
+exec python3 tools/dg.py test dev -L unit
+"""
+
+
+def cmd_hooks(args: argparse.Namespace) -> None:
+    hooks = Path(subprocess.run(["git", "rev-parse", "--git-path", "hooks"], cwd=ROOT, capture_output=True,
+                                text=True, check=True).stdout.strip())
+    hook = (ROOT / hooks if not hooks.is_absolute() else hooks) / "pre-push"
+    ours = hook.exists() and HOOK_MARKER in hook.read_text(errors="replace")
+    if args.action == "install":
+        if hook.exists() and not ours:
+            fail(f"{hook} already exists and was not created by dg; merge it by hand")
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        hook.write_text(PRE_PUSH_HOOK)
+        hook.chmod(0o755)
+        info(f"installed pre-push hook: {hook} (runs `dg test dev -L unit`)")
+    elif args.action == "uninstall":
+        if ours:
+            hook.unlink()
+            info(f"removed {hook}")
+        else:
+            info("no dg pre-push hook installed")
+    else:
+        info(f"pre-push hook: {'installed' if ours else 'not installed'} ({hook})")
+
+
 def cmd_presets(_: argparse.Namespace) -> None:
     run_cmd(["cmake", "--list-presets=all"])
     info(f"default preset on this machine: {default_preset()}  (IDE: "
@@ -451,6 +491,8 @@ def main() -> None:
     p.add_argument("--all", action="store_true", help="delete the whole build/ directory")
     add("presets", cmd_presets, help_text="list presets")
     add("gui", cmd_gui, help_text="open the graphical launcher")
+    p = add("hooks", cmd_hooks, help_text="install a git pre-push hook that runs the unit tests")
+    p.add_argument("action", choices=["install", "uninstall", "status"], nargs="?", default="status")
     for p in sub.choices.values():
         p.add_argument("--fresh", action="store_true", help="discard the CMake cache and reconfigure")
 
