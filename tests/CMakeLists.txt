@@ -19,7 +19,7 @@ function(dg_add_test name)
     gtest_discover_tests(${name}
         TEST_PREFIX "${name}."
         DISCOVERY_MODE PRE_TEST
-        PROPERTIES LABELS "${labels}")
+        PROPERTIES LABELS "${labels}" TIMEOUT 300) # a hang fails one test in 5 minutes instead of stalling CI
 endfunction()
 
 dg_add_test(dg-core-tests SOURCES core/MemoryTest.cpp core/HandleTest.cpp core/LogTest.cpp DEPS dg::core LABELS determinism)

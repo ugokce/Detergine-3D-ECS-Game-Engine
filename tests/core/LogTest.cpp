@@ -17,6 +17,20 @@
 #include <thread>
 #include <vector>
 
+// fork() from a multithreaded process is not reliable under sanitizers: on Linux, LeakSanitizer's exit-time check in
+// the forked child hung CI for an hour. The fork tests below therefore skip under ASan/TSan; every normal build
+// (macOS, Linux) still runs them.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    #define DG_TEST_UNDER_SANITIZER 1
+#elif defined(__has_feature)
+    #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+        #define DG_TEST_UNDER_SANITIZER 1
+    #endif
+#endif
+#ifndef DG_TEST_UNDER_SANITIZER
+    #define DG_TEST_UNDER_SANITIZER 0
+#endif
+
 namespace {
 
 namespace fs = std::filesystem;
@@ -379,6 +393,9 @@ TEST(AsyncLogDeath, AssertionMessageSurvivesLevelOff) {
 // lost its message, and exit() in the child ended in std::terminate when the atexit shutdown joined the missing
 // thread. The "fast" death-test style forks without exec, exactly like that.
 TEST(AsyncLogDeath, ForkedChildLogsSynchronouslyAndExitsCleanly) {
+    if (DG_TEST_UNDER_SANITIZER) {
+        GTEST_SKIP() << "fork() with live threads is unreliable under sanitizers";
+    }
     const LoggerReset reset;
     GTEST_FLAG_SET(death_test_style, "fast");
     ASSERT_TRUE(dg::log::init({.level = dg::log::Level::Info}));
@@ -400,6 +417,9 @@ TEST(AsyncLogDeath, ForkedChildLogsSynchronouslyAndExitsCleanly) {
 
     #if DG_ASSERTS_ENABLED
 TEST(AsyncLogDeath, ForkedChildAssertionMessageSurvivesAbort) {
+    if (DG_TEST_UNDER_SANITIZER) {
+        GTEST_SKIP() << "fork() with live threads is unreliable under sanitizers";
+    }
     const LoggerReset reset;
     GTEST_FLAG_SET(death_test_style, "fast");
     ASSERT_TRUE(dg::log::init({}));

@@ -159,7 +159,8 @@ dg_add_test(dg-sim-tests SOURCES sim/SimDeterminismTest.cpp DEPS dg::sim LABELS 
 path, applies `dg_configure_target` (the same warnings and strict floating-point flags as engine code), and registers
 the tests with `gtest_discover_tests(... DISCOVERY_MODE PRE_TEST)`. PRE_TEST discovery lists the tests when CTest
 runs, not at build time, so sanitizer and cross-compiled builds still build even when the binary cannot run on the
-build host.
+build host. Every discovered test gets a CTest `TIMEOUT` of 300 seconds, so a hanging test fails on its own within
+five minutes instead of stalling the whole run.
 
 Every new sim system also needs a replay-based determinism test (CLAUDE.md, *Build & test*). Until replays exist,
 follow [SimDeterminismTest.cpp](tests/sim/SimDeterminismTest.cpp): run a scripted workload twice, check that the
@@ -179,7 +180,9 @@ conventions, which every `DG_ASSERT` death test uses:
 * Start each test with `GTEST_FLAG_SET(death_test_style, "threadsafe");`. The statement then runs in a freshly
   re-executed child process, so allocations it makes before dying never reach the parent. The only exceptions are the
   two `AsyncLogDeath.ForkedChild...` tests in [LogTest.cpp](tests/core/LogTest.cpp), which use the `fast` style on
-  purpose because they test what happens to the logger in a child forked without re-executing.
+  purpose because they test what happens to the logger in a child forked without re-executing. They skip themselves
+  (`GTEST_SKIP`) under ASan and TSan: forking a multithreaded process is unreliable under sanitizers, and on Linux
+  LeakSanitizer's exit-time check in the forked child hung CI. Normal builds on macOS and Linux still run them.
 * Match the specific assert text, not just any crash, so the test only passes when the intended contract fired.
 * Put multi-statement misuse in a lambda. `EXPECT_DEATH` is a macro, and commas in the statement would split its
   arguments.

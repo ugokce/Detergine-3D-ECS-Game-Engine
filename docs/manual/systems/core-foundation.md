@@ -613,8 +613,8 @@ What covers the pieces on this page:
 | `LogLevels.ParseAndNameRoundTrip` | `parseLevel` / `levelName` round trip, `warning`, case sensitivity |
 | `AsyncLogDeath.AssertionMessageSurvivesAbort` | The assert message is written behind 5000 queued messages before `abort()` (asserts enabled) |
 | `AsyncLogDeath.AssertionMessageSurvivesLevelOff` | The assert message is written at `Level::Off` (asserts enabled) |
-| `AsyncLogDeath.ForkedChildLogsSynchronouslyAndExitsCleanly` | A forked child logs `error()` fast and exits without `std::terminate` (POSIX only; also in Release) |
-| `AsyncLogDeath.ForkedChildAssertionMessageSurvivesAbort` | A forked child's assert message is written (POSIX only, asserts enabled) |
+| `AsyncLogDeath.ForkedChildLogsSynchronouslyAndExitsCleanly` | A forked child logs `error()` fast and exits without `std::terminate` (POSIX only; also in Release; skipped under ASan/TSan) |
+| `AsyncLogDeath.ForkedChildAssertionMessageSurvivesAbort` | A forked child's assert message is written (POSIX only, asserts enabled; skipped under ASan/TSan) |
 
 The fork tests use the `fast` death-test style on purpose: it forks without re-executing the binary, which is the
 situation they test. The two timing bounds in `NonBlockingQueueDropsMessagesButNeverFlushesOrErrors` are far above the

@@ -43,7 +43,8 @@ The workflow runs on:
   workflow**, or run `gh workflow run CI`.
 
 Runs are grouped by `ci-<git ref>` with `cancel-in-progress: true`. A new push to a branch or pull request cancels the
-run that is still going for the same ref, so only the latest commit is checked.
+run that is still going for the same ref, so only the latest commit is checked. Every job has `timeout-minutes: 45`,
+and every CTest test a 300-second timeout, so a hang fails quickly instead of holding a runner for hours.
 
 ### What each job runs
 
