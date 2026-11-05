@@ -4,11 +4,12 @@
 # targets: an inline math function compiled with different FP flags in two translation units is an ODR hazard, and the
 # linker may keep the contracted (FMA) copy for sim code. Identical in every configuration, so Debug == Release.
 function(dg_strict_fp target)
-    if(MSVC)
+    if(MSVC AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+        # clang-cl: its default FP model is already precise but still contracts to FMA. Passing /fp:precise as well
+        # makes clang-cl warn that -ffp-contract=off overrides it (an error under warnings-as-errors).
+        target_compile_options(${target} PRIVATE /clang:-ffp-contract=off)
+    elseif(MSVC)
         target_compile_options(${target} PRIVATE /fp:precise)
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang") # clang-cl contracts to FMA unless told not to
-            target_compile_options(${target} PRIVATE /clang:-ffp-contract=off)
-        endif()
     else()
         target_compile_options(${target} PRIVATE -ffp-contract=off -fno-fast-math)
     endif()

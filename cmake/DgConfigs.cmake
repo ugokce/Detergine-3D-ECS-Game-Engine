@@ -41,4 +41,7 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+# The engine does not use C++20 modules. Without this, Ninja + Clang scans every source for module dependencies
+# (needs clang-scan-deps, and costs an extra pass per file).
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
