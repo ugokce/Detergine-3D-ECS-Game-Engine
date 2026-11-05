@@ -102,14 +102,20 @@ Extra arguments with unbalanced quotes are ignored silently. The flags themselve
 | Determinism | `dg determinism <common>` (always the default 1800 ticks) |
 | Clean | `dg clean --preset <name>` |
 | Open Build Folder | Opens `build/<preset>/` in Finder, Explorer or `xdg-open`; warns if it does not exist yet |
+| Build Docs | `dg docs`: builds the [engine manual](../contributing/documentation.md) into `build/docs/` |
+| Open Docs | `dg docs --open`: builds the manual, then opens `build/docs/index.html` in the default browser |
+| Check Docs | `dg docs --check`: validates front matter, the system page template, links and source coverage |
 | Stop | Interrupts the running command |
+
+The three manual buttons sit on their own *Manual* row and take no preset or build options: the manual does not
+depend on a build tree.
 
 `<common>` is `--preset <name>` plus the `-D`, `-j`, `--verbose` and `--fresh` arguments from *Build options*. Open IDE
 maps `macos-arm64` to `macos-arm64-xcode` and `windows-x64` to `windows-x64-vs<year>` (the installed Visual Studio
 year, `2022` when unknown). For other Ninja presets, such as `linux-x64`, it prints an error.
 
-Only one command runs at a time. While it runs, Build, Run, Test, Check Setup, Generate, Open IDE, Determinism and
-Clean are disabled and Stop is enabled. Open Build Folder, Copy and Clear Output stay usable.
+Only one command runs at a time. While it runs, Build, Run, Test, Check Setup, Generate, Open IDE, Determinism,
+Clean, Build Docs, Open Docs and Check Docs are disabled and Stop is enabled. Open Build Folder, Copy and Clear Output stay usable.
 
 **Console and status**
 
@@ -181,7 +187,7 @@ All code is in [tools/dg_launcher.py](tools/dg_launcher.py), in one `Launcher(tk
 |---|---|
 | Layout | `build_ui`, `build_project_group`, `build_options_group`, `build_run_group`, `build_test_group`, `build_actions`, `build_console` |
 | State | `on_change` (app list, notes, command line), `common_args`, `build_args`, `run_args`, `describe` |
-| Actions | `do_setup`, `do_generate`, `do_ide`, `do_build`, `do_run`, `do_test`, `do_determinism`, `do_clean`, `open_build_folder` |
+| Actions | `do_setup`, `do_generate`, `do_ide`, `do_build`, `do_run`, `do_test`, `do_determinism`, `do_clean`, `do_docs_build`, `do_docs_open`, `do_docs_check`, `open_build_folder` |
 | Processes | `start`, `read_output`, `pump_output`, `finish`, `stop`, `force_kill` |
 | Settings | `load_settings`, `save_settings` |
 
@@ -210,5 +216,7 @@ The launcher has no automated tests. After a change, start it with `./dg gui` an
    unticking it adds `-D DG_HEADLESS=OFF`, because the cache now holds `ON`.
 4. Stop interrupts a long build or a `Run` without *Ticks*.
 5. After closing and reopening, every setting except *Fresh configure* is restored.
+6. *Build Docs* prints `[docs] built N pages`, *Check Docs* ends with `0 problems`, and *Open Docs* opens the manual
+   in the browser.
 
 Check on each host you changed behaviour for (macOS, Windows, Linux) and say in the pull request which ones you ran.

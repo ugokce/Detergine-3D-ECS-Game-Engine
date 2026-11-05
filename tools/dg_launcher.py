@@ -188,9 +188,12 @@ class Launcher(tk.Tk):
         primary = [("Build", self.do_build), ("Run", self.do_run), ("Test", self.do_test)]
         secondary = [("Check Setup", self.do_setup), ("Generate", self.do_generate), ("Open IDE", self.do_ide),
                      ("Determinism", self.do_determinism), ("Clean", self.do_clean)]
-        row1, row2 = ttk.Frame(bar), ttk.Frame(bar)
+        manual = [("Build Docs", self.do_docs_build), ("Open Docs", self.do_docs_open),
+                  ("Check Docs", self.do_docs_check)]
+        row1, row2, row3 = ttk.Frame(bar), ttk.Frame(bar), ttk.Frame(bar)
         row1.pack(fill="x")
         row2.pack(fill="x", pady=(4, 0))
+        row3.pack(fill="x", pady=(4, 0))
         for text, command in primary:
             button = ttk.Button(row1, text=text, command=command, style="Primary.TButton", width=10)
             button.pack(side="left", padx=(0, 6))
@@ -202,6 +205,12 @@ class Launcher(tk.Tk):
             button.pack(side="left", padx=(0, 6))
             self.action_buttons.append(button)
         ttk.Button(row2, text="Open Build Folder", command=self.open_build_folder).pack(side="right")
+        # The engine manual (docs/manual -> build/docs), see docs/manual/contributing/documentation.md.
+        ttk.Label(row3, text="Manual:").pack(side="left", padx=(0, 6))
+        for text, command in manual:
+            button = ttk.Button(row3, text=text, command=command)
+            button.pack(side="left", padx=(0, 6))
+            self.action_buttons.append(button)
 
     def build_console(self, parent: ttk.Frame) -> None:
         frame = ttk.Frame(parent)
@@ -345,6 +354,15 @@ class Launcher(tk.Tk):
 
     def do_determinism(self) -> None:
         self.start(["determinism", *self.common_args()])
+
+    def do_docs_build(self) -> None:
+        self.start(["docs"])
+
+    def do_docs_open(self) -> None:
+        self.start(["docs", "--open"])
+
+    def do_docs_check(self) -> None:
+        self.start(["docs", "--check"])
 
     def do_clean(self) -> None:
         self.start(["clean", "--preset", self.preset["name"]])
