@@ -40,7 +40,7 @@ x64 is checked once CI runs (step 2).
 |---|---|---|---|---|
 | 0 | Build system | CMake presets, `dg` tool, launcher GUI, minimal core/sim/runtime, smoke and determinism tests | `./dg test` green in all configurations; Debug hash equals Release hash | Done |
 | 1 | Core foundation | Heap, linear and pool allocators; generational handles; `dg::fixed32`/`fixed64`; `dg::detmath`; vector, quaternion and matrix math | Unit tests green; detmath golden hash recorded; accuracy bounds met; no UB under ASan/UBSan | Done (macOS ARM64) |
-| 2 | Dependencies and CI | vcpkg pinned to 2026.10.16, GoogleTest, GitHub Actions CI, pre-push hook, spdlog sinks, Tracy, xxHash | CI green on all hosts; golden hashes identical on x64 and ARM64 | In progress |
+| 2 | Dependencies and CI | vcpkg pinned to 2026.10.16, GoogleTest, GitHub Actions CI, pre-push hook, spdlog async logger, Tracy, xxHash | CI green on all hosts; golden hashes identical on x64 and ARM64 | In progress |
 | 3 | Reflection | `dg::refl` runtime (TypeRegistry, TypeInfo, attributes), `dg-reflect` generator MVP for `DG_REFLECT` / `DG_PROPERTY` | Reflected structs round-trip through a field walker; the generator runs in the build | Not started |
 | 4 | Serialization | Reflection-driven YAML (rapidyaml) and binary archives, schema versioning | Round-trip tests; stable, diff-friendly YAML | Not started |
 | 5 | ECS | Archetype storage, queries, systems and scheduler, command buffers, events, snapshot/restore, hierarchical state hash | Snapshot, restore, identical hash; benchmark baseline | Not started |
@@ -76,7 +76,7 @@ Done:
 
 * vcpkg pinned to release `2026.10.16` with a matching `builtin-baseline` in `vcpkg.json`.
 * GoogleTest 1.18.0 through vcpkg. All suites were converted with every original check accounted for, and 20 death
-  tests were added for `DG_ASSERT` paths. Debug registers 117 CTest tests.
+  tests were added for `DG_ASSERT` paths. Debug registered 117 CTest tests after the conversion.
 * The GitHub Actions workflow and the `dg hooks install` pre-push hook. See
   [Continuous integration and git hooks](../tooling/ci.md).
 * Build fixes found during the conversion: Xcode's Debug libc++ hardening is pinned to `none` because it is
@@ -86,10 +86,14 @@ Done:
   build are green.
 * The engine manual in `docs/manual/`, built to HTML with `./dg docs`. CI's `Manual` job validates it and requires doc
   updates for changed sources. See [Writing documentation](../contributing/documentation.md).
+* The engine logger: `dg::log` runs on spdlog 1.17 in asynchronous mode (one worker thread, blocking queue by
+  default, `Error`/`Fatal` flushed before the call returns, console, file and logcat sinks), with the `--log-level`
+  and `--log-file` app flags. Built and tested on macOS ARM64 so far. With its tests, Debug now registers 133 CTest
+  tests. See [Core foundation](../systems/core-foundation.md#logging).
 
 Remaining:
 
-* spdlog sinks, Tracy, and xxHash. xxHash replaces FNV-1a for state hashes, which changes every recorded golden hash.
+* Tracy and xxHash. xxHash replaces FNV-1a for state hashes, which changes every recorded golden hash.
 
 ## Roadmap phases
 

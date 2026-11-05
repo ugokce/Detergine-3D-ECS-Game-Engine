@@ -8,7 +8,7 @@ A step is only marked done when its exit criteria hold on macOS ARM64. Windows x
 |---|---|---|---|---|
 | 0 | Build system | CMake presets, `dg` tool, launcher GUI, minimal core/sim/runtime, smoke + determinism tests | `./dg test` green in all configs; Debug == Release hash | ✅ done |
 | 1 | **Core foundation** | Allocators (heap, linear, pool), generational handles, deterministic math (`dg::fixed32/64`, `dg::detmath`), vector/quaternion/matrix math, temporary test harness | Unit tests green; detmath golden-bit hash recorded; accuracy bounds met; no UB under UBSan/ASan | ✅ done (macOS ARM64) |
-| 2 | Dependencies & CI | vcpkg pinned to release 2026.10.16 ✅, **GoogleTest** replaces the harness ✅, GitHub Actions CI (macOS ARM64, Windows x64, Linux x64, ASan/UBSan, Android build) ✅ written, pre-push hook ✅; still to do: spdlog sinks, Tracy, xxHash (replaces FNV) | CI green on all hosts; **golden hashes identical on x64 and ARM64** | 🚧 in progress |
+| 2 | Dependencies & CI | vcpkg pinned to release 2026.10.16 ✅, **GoogleTest** replaces the harness ✅, GitHub Actions CI (macOS ARM64, Windows x64, Linux x64, ASan/UBSan, Android build) ✅ written, pre-push hook ✅, **spdlog async engine logger** ✅; still to do: Tracy, xxHash (replaces FNV) | CI green on all hosts; **golden hashes identical on x64 and ARM64** | 🚧 in progress |
 | 3 | Reflection | `dg::refl` runtime (TypeRegistry, TypeInfo, attributes), `dg-reflect` generator MVP for `DG_REFLECT` / `DG_PROPERTY` | Reflected structs round-trip through a field walker; generator runs in the build | ⏳ |
 | 4 | Serialization | Reflection-driven YAML (rapidyaml) and binary archives, schema versioning | Round-trip tests; stable, diff-friendly YAML output | ⏳ |
 | 5 | ECS | Archetype storage, queries, systems + scheduler, command buffers, events, snapshot/restore, hierarchical state hash | Snapshot → restore → identical hash; benchmark baseline | ⏳ |
@@ -82,5 +82,7 @@ A step is only marked done when its exit criteria hold on macOS ARM64. Windows x
   toolchains.
 * **Engine manual:** `docs/manual/` → HTML via `./dg docs`. CI's `Manual` job validates it and requires doc updates for
   changed sources (CLAUDE.md, *Documentation is part of every change*).
+* **Engine logger:** `dg::log` now runs on spdlog 1.17 in asynchronous mode (one worker, blocking queue by default,
+  synchronous Error/Fatal flush, console/file/logcat sinks, `--log-level` / `--log-file` app flags).
 * **Remaining:**
-  * spdlog sinks, Tracy, xxHash.
+  * Tracy, xxHash.

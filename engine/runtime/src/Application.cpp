@@ -8,6 +8,9 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <format>
+#include <optional>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -34,6 +37,8 @@ void printUsage(std::string_view appName) {
                 "  --players <n>       Number of scripted player slots (default 2)\n"
                 "  --seed <n>          Simulation seed\n"
                 "  --level <name>      Level to load\n"
+                "  --log-level <name>  trace, debug, info (default), warn, error, fatal or off\n"
+                "  --log-file <path>   Also write the log to this file (truncated at start)\n"
                 "  --version           Print build information\n"
                 "  --help              Show this help\n",
                 static_cast<int>(appName.size()), appName.data());
@@ -92,6 +97,22 @@ std::expected<ParseOutcome, std::string> parseCommandLine(int argc, char** argv,
                 return std::unexpected(text.error());
             }
             config.level = *text;
+        } else if (arg == "--log-level") {
+            auto text = value();
+            if (!text) {
+                return std::unexpected(text.error());
+            }
+            const std::optional<log::Level> parsed = log::parseLevel(*text);
+            if (!parsed) {
+                return std::unexpected(std::format("--log-level: '{}' is not a log level", *text));
+            }
+            config.logLevel = *parsed;
+        } else if (arg == "--log-file") {
+            auto text = value();
+            if (!text) {
+                return std::unexpected(text.error());
+            }
+            config.logFile = *text;
         } else {
             return std::unexpected(std::format("unknown argument '{}' (see --help)", arg));
         }
@@ -147,10 +168,24 @@ int run(const AppConfig& config) {
     }
 
     const f64 seconds = std::chrono::duration<f64>(Clock::now() - start).count();
-    // Machine-readable line consumed by `dg determinism`; keep the format stable.
-    log::info("final tick={} state-hash=0x{:016x} elapsed={:.3f}s", simulation.tick(), simulation.stateHash(),
-              seconds);
+    // Machine-readable line consumed by `dg determinism`; keep the format stable. It must reach stdout whatever
+    // --log-level says, so it bypasses the log when Info is filtered out.
+    const std::string result =
+        std::format("final tick={} state-hash=0x{:016x} elapsed={:.3f}s", simulation.tick(), simulation.stateHash(),
+                    seconds);
+    if (log::enabled(log::Level::Info)) {
+        log::info("{}", result);
+    } else {
+        log::flush(); // keep it after everything logged so far
+        std::fwrite(result.data(), 1, result.size(), stdout);
+        std::fputc('\n', stdout);
+        std::fflush(stdout);
+    }
     return 0;
+}
+
+std::expected<void, std::string> startLogging(const AppConfig& config) {
+    return log::init({.level = config.logLevel, .filePath = config.logFile});
 }
 
 int runMain(int argc, char** argv, AppConfig defaults) {
@@ -162,7 +197,13 @@ int runMain(int argc, char** argv, AppConfig defaults) {
     if (*outcome == ParseOutcome::ExitSuccess) {
         return 0;
     }
-    return run(defaults);
+    if (!startLogging(defaults)) {
+        log::shutdown();
+        return 2; // the reason has been logged
+    }
+    const int exitCode = run(defaults);
+    log::shutdown(); // drain the async queue before main returns (the atexit hook is only a safety net)
+    return exitCode;
 }
 
 } // namespace dg::runtime

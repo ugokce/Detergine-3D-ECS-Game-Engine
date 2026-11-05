@@ -4,7 +4,11 @@
   "version": "0.1.0",
   "description": "Natively deterministic, modular 3D/2D game engine",
   "dependencies": [
-    "gtest"
+    "gtest",
+    {
+      "name": "spdlog",
+      "default-features": false
+    }
   ],
   "builtin-baseline": "9eec002df1cd109f8f104cd966a763daf9751489"
 }

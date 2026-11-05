@@ -22,7 +22,7 @@ function(dg_add_test name)
         PROPERTIES LABELS "${labels}")
 endfunction()
 
-dg_add_test(dg-core-tests SOURCES core/MemoryTest.cpp core/HandleTest.cpp DEPS dg::core LABELS determinism)
+dg_add_test(dg-core-tests SOURCES core/MemoryTest.cpp core/HandleTest.cpp core/LogTest.cpp DEPS dg::core LABELS determinism)
 dg_add_test(dg-fixed-tests SOURCES math/FixedTest.cpp DEPS dg::math LABELS determinism)
 dg_add_test(dg-detmath-tests SOURCES math/DetMathTest.cpp DEPS dg::math LABELS determinism)
 dg_add_test(dg-vector-tests SOURCES math/VectorTest.cpp DEPS dg::math LABELS determinism)

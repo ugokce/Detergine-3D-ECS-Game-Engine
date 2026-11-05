@@ -12,6 +12,12 @@ int main(int argc, char** argv) {
     if (*outcome == dg::runtime::ParseOutcome::ExitSuccess) {
         return 0;
     }
+    if (!dg::runtime::startLogging(config)) {
+        dg::log::shutdown();
+        return 2; // the reason has been logged
+    }
     dg::log::info("dg-editor: the editor UI is not implemented yet; running the engine loop (Ctrl+C to quit)");
-    return dg::runtime::run(config);
+    const int exitCode = dg::runtime::run(config);
+    dg::log::shutdown();
+    return exitCode;
 }

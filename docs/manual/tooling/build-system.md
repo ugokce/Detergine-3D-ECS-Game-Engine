@@ -154,13 +154,21 @@ libraries.
 2. When it finds vcpkg, it sets `CMAKE_TOOLCHAIN_FILE` to vcpkg's toolchain. If a different toolchain was already set
    (the Android NDK one from the `android-arm64` preset), it is moved to `VCPKG_CHAINLOAD_TOOLCHAIN_FILE`, so vcpkg
    loads it in turn.
-3. It sets the internal cache variable `DG_USING_VCPKG` to `ON` or `OFF`. Without vcpkg no third-party package is available,
-   so with the default `DG_BUILD_TESTS=ON` the configure step itself fails at `find_package(GTest CONFIG REQUIRED)`
-   in [tests/CMakeLists.txt](tests/CMakeLists.txt). The project configures without vcpkg only with
-   `-D DG_BUILD_TESTS=OFF`. Run `./dg setup --vcpkg` or set `VCPKG_ROOT` instead.
+3. It sets the internal cache variable `DG_USING_VCPKG` to `ON` or `OFF`. vcpkg is required: without it no
+   third-party package is available, and the configure step fails at `find_package(spdlog CONFIG REQUIRED)` in
+   [engine/core/CMakeLists.txt](engine/core/CMakeLists.txt), because the engine logger needs spdlog. With tests on,
+   `find_package(GTest CONFIG REQUIRED)` in [tests/CMakeLists.txt](tests/CMakeLists.txt) needs vcpkg as well.
+   `-D DG_BUILD_TESTS=OFF` no longer avoids vcpkg. Run `./dg setup --vcpkg` or set `VCPKG_ROOT`.
 
-The manifest [vcpkg.json](vcpkg.json) currently lists one dependency, `gtest`, and pins
-`builtin-baseline` `9eec002df1cd109f8f104cd966a763daf9751489`. `dg setup --vcpkg` clones vcpkg at the release tag
+The manifest [vcpkg.json](vcpkg.json) currently lists two dependencies and pins `builtin-baseline`
+`9eec002df1cd109f8f104cd966a763daf9751489`:
+
+| Port | Version | Used by | Notes |
+|---|---|---|---|
+| `gtest` | 1.18.0 | `tests/` | GoogleTest, found with `find_package(GTest CONFIG REQUIRED)` |
+| `spdlog` | 1.17.0 | `dg_core` (privately, only `engine/core/src/Log.cpp`) | Declared with `"default-features": false`. That turns off the port's default `fmt` and `tz-offset` features, so spdlog is built on `std::format` (`SPDLOG_USE_STD_FORMAT`) and the fmt library is not installed. It is a compiled static library; see [Core foundation](../systems/core-foundation.md#how-the-logger-works) |
+
+`dg setup --vcpkg` clones vcpkg at the release tag
 `VCPKG_RELEASE` in [dg.py](tools/dg.py) (currently `2026.10.16`), so every machine and CI runner resolves the same
 port versions.
 
@@ -257,7 +265,10 @@ checkbox for it. Update the options table on this page.
 2. Add the port name to `dependencies` in [vcpkg.json](vcpkg.json).
 3. In the module's `CMakeLists.txt`, call `find_package(<Pkg> CONFIG REQUIRED)` and link the imported target through
    `PUBLIC_DEPS` or `PRIVATE_DEPS`.
-4. Add a line to DESIGN.md §2 and mention the dependency on the module's manual page.
+4. Add a line to DESIGN.md §2 and mention the dependency on the module's manual page and in the port table under
+   [vcpkg](#vcpkg). Prefer `PRIVATE_DEPS` and keep the library out of the module's public headers, as `dg_core` does
+   with spdlog. If the port's default features pull in more than you need, declare it as an object with
+   `"default-features": false`.
 
 To move every machine to newer port versions, bump `VCPKG_RELEASE` in [dg.py](tools/dg.py) and `builtin-baseline` in
 [vcpkg.json](vcpkg.json) together. Existing `external/vcpkg/` clones are not updated automatically. Delete the folder

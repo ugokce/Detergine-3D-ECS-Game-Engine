@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shlex
 import signal
 import subprocess
@@ -34,6 +35,12 @@ TEST_LABELS = ["all", "determinism", "smoke"]
 OPTION_DEFAULTS = {"DG_BUILD_EDITOR": True, "DG_BUILD_TESTS": True, "DG_HEADLESS": False,
                    "DG_WARNINGS_AS_ERRORS": False,
                    "DG_ENABLE_ASAN": False, "DG_ENABLE_UBSAN": False}
+
+# Engine log lines: "[HH:MM:SS.mmm] [level] message" (console sink) or "[level] message" (fallback output).
+ENGINE_LOG_LEVEL = re.compile(r"^(?:\[[\d:.]+\] )?\[(trace|debug|info|warn|error|fatal)\] ")
+
+# Real failures only: "(Failed)", "N tests failed" with N > 0, "failed with"; not CTest's "0 tests failed" summary.
+FAILURE = re.compile(r"\(failed\)|\b[1-9]\d* tests? failed|failed with|\bfailed:")
 
 # Harmless xcodebuild chatter on machines whose iOS simulator runtime is out of date.
 NOISE = ("CoreSimulator", "DVTErrorPresenter", "Domain: DVTCoreSimulator", "iOSSimulator:", "Recovery Suggestion: Please ensure",
@@ -418,10 +425,13 @@ class Launcher(tk.Tk):
                 if self.hide_noise_var.get() and (any(n in line for n in NOISE) or line.strip() in ("--", "Code: 3")):
                     continue
                 lower = line.lower()
+                engine = ENGINE_LOG_LEVEL.match(line)
+                level = engine.group(1) if engine else ""
                 tag = None
-                if line.startswith("[dg] error") or "error:" in lower or "failed" in lower or "desync" in lower:
+                if level in ("error", "fatal") or line.startswith("[dg] error") or "error:" in lower or \
+                        FAILURE.search(lower) or "desync" in lower:
                     tag = "error"
-                elif "warning" in lower or line.startswith("[warn]"):
+                elif level == "warn" or "warning" in lower:
                     tag = "warn"
                 elif line.startswith("[dg]") or line.startswith("$ "):
                     tag = "dg"

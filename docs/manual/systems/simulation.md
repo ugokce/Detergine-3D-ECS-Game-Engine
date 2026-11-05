@@ -78,7 +78,7 @@ reach the same state from the command line, because the apps use the same defaul
 
 ```bash
 ./dg run dev player -- --headless --fast --ticks 1800
-# [info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=0.002s
+# [18:14:35.423] [info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=0.003s
 ```
 
 ### Draw random numbers

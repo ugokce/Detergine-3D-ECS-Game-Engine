@@ -131,7 +131,7 @@ importer (a version bump invalidates its DDC entries), and declaring whether its
   ([DESIGN.md §3.1](https://github.com/ugokce/Detergine-3D-ECS-Game-Engine/blob/main/docs/DESIGN.md#31-repository-layout-target)).
   The [dg developer tool](../tooling/dg-tool.md) is the natural front end for them.
 * **Dependencies**: fastgltf, ufbx, KTX-Software, Basis Universal, meshoptimizer, zstd, LZ4 and rapidyaml are all
-  listed in DESIGN.md §2 but not yet in [vcpkg.json](https://github.com/ugokce/Detergine-3D-ECS-Game-Engine/blob/main/vcpkg.json), which contains only `gtest`.
+  listed in DESIGN.md §2 but not yet in [vcpkg.json](https://github.com/ugokce/Detergine-3D-ECS-Game-Engine/blob/main/vcpkg.json), which contains only `gtest` and `spdlog`.
 * **When you change this design or start the module**: read DESIGN.md §11 first. Serialized data references assets by
   GUID, never by path. Changing which assets are sim-relevant, or how their content hashes enter the determinism
   manifest, changes what peers accept at the handshake. New importers go behind `IAssetImporter`, and every new

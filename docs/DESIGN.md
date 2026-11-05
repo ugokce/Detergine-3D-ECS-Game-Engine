@@ -55,7 +55,7 @@ nondeterminism in anything that touches the simulation.
 | Windowing / input / platform | **SDL3** | Zlib | Windows, macOS, Android, iOS. Vulkan surface creation, gamepads, touch, IME, Android activity glue. |
 | Job system | **enkiTS** (or Taskflow) | Zlib / MIT | Task graph with dependencies; pinned threads for render/IO. Wrapped behind `dg::jobs`. |
 | Containers | **ankerl::unordered_dense**, std containers | MIT | `unordered_dense` is fast but **not** for ordered iteration inside sim (see §5). |
-| Logging / formatting | `std::format` / `std::print` + **spdlog** sinks | MIT | |
+| Logging / formatting | **spdlog 1.17, asynchronous mode** (vcpkg, built on `std::format`, no fmt) behind `dg::log` | MIT | One background worker; the caller waits when the queue is full, so nothing is lost by default; Error/Fatal flush synchronously so asserts never lose their message; console/file/logcat sinks; spdlog stays private to `Log.cpp`. |
 | Profiling | **Tracy** | BSD-3 | CPU, GPU (Vulkan), memory, lock zones. Compiled out in Shipping. |
 | Hashing | **xxHash (XXH3)** | BSD-2 | Asset IDs, state checksums, desync detection. |
 | Compression | **zstd**, **LZ4** | BSD | zstd for packages/snapshots, LZ4 for fast network/rollback buffers. |

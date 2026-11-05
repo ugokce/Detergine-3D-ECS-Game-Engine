@@ -17,7 +17,7 @@ The test tree mirrors the engine:
 
 | Path | Executable | Covers |
 |---|---|---|
-| [tests/core/MemoryTest.cpp](tests/core/MemoryTest.cpp), [tests/core/HandleTest.cpp](tests/core/HandleTest.cpp) | `dg-core-tests` | Allocators and generational handles (`dg::core`) |
+| [tests/core/MemoryTest.cpp](tests/core/MemoryTest.cpp), [tests/core/HandleTest.cpp](tests/core/HandleTest.cpp), [tests/core/LogTest.cpp](tests/core/LogTest.cpp) | `dg-core-tests` | Allocators, generational handles and the asynchronous logger (`dg::core`) |
 | [tests/math/FixedTest.cpp](tests/math/FixedTest.cpp) | `dg-fixed-tests` | `dg::fixed32` / `dg::fixed64` |
 | [tests/math/DetMathTest.cpp](tests/math/DetMathTest.cpp) | `dg-detmath-tests` | `dg::detmath` accuracy, special values and bit-exactness |
 | [tests/math/VectorTest.cpp](tests/math/VectorTest.cpp) | `dg-vector-tests` | Vectors, quaternions and matrices |
@@ -48,7 +48,7 @@ runs `ctest --output-on-failure`:
 ```bash
 ./dg test                    # Development (the default)
 ./dg test debug              # Debug
-./dg test release            # Release: asserts compiled out, death tests skipped
+./dg test release            # Release: asserts compiled out, assert death tests skipped
 ./dg test dev -L determinism # only tests with the determinism label
 ./dg test dev -L smoke       # only the app smoke tests
 ```
@@ -91,20 +91,23 @@ the same GoogleTest cases. `-L unit` excludes the smoke tests, which is why the 
 ### Current suites
 
 The counts below come from `ctest -N` and `--gtest_list_tests` on macOS ARM64. Debug and Development compile asserts
-in (`DG_ASSERTS_ENABLED=1`), so they include the death tests; Release compiles asserts out and runs the
+in (`DG_ASSERTS_ENABLED=1`), so they include the assert death tests; Release compiles asserts out and runs the
 release-only fallback tests instead.
 
 | Executable | GoogleTest suites | Debug / Development | Release |
 |---|---|---|---|
-| `dg-core-tests` | `AlignUp`, `DefaultAlignment`, `HeapAllocator`, `LinearAllocator`, `PoolAllocator`, `Handle`, `HandlePool`; Debug/Development only: `HeapAllocatorDeath`, `LinearAllocatorDeath`, `PoolAllocatorDeath`; Release only: `UncheckedAllocators` | 38 | 25 |
+| `dg-core-tests` | `AlignUp`, `DefaultAlignment`, `HeapAllocator`, `LinearAllocator`, `PoolAllocator`, `Handle`, `HandlePool`, `AsyncLog`, `LogLevels`, `AsyncLogDeath` (4 tests; 1 in Release); Debug/Development only: `HeapAllocatorDeath`, `LinearAllocatorDeath`, `PoolAllocatorDeath`; Release only: `UncheckedAllocators` | 54 | 38 |
 | `dg-fixed-tests` | `FixedConstruction`, `FixedConversion`, `FixedFromDouble`, `FixedFromFloat`, `FixedWrapping`, `FixedArithmetic`, `FixedMultiply`, `FixedMultiplyTies`, `FixedDivision`, `FixedSqrt`, `FixedReference`, `FixedDetail`, `FixedRounding`, `FixedLerp`, `FixedMinMax`, `FixedFormat`, `FixedGolden`; Debug/Development only: `FixedDeath` | 36 | 34 |
 | `dg-detmath-tests` | `DetMathAccuracy`, `DetMathSpecialValues`, `DetMathIdentities`, `DetMathDeterminism` | 17 | 17 |
 | `dg-vector-tests` | `Vector`, `Quat`, `Matrix`, `VectorRegression`, `QuatRegression`, `MatrixRegression`, `MathGolden` | 17 | 17 |
 | `dg-sim-tests` | `SimDeterminism`; Debug/Development only: `SimulationDeath` | 6 | 4 |
 | Smoke tests | `player.smoke`, `server.smoke`, `editor.smoke` | 3 | 3 |
-| **Total CTest tests** | | **117** | **100** |
+| **Total CTest tests** | | **133** | **113** |
 
-There are 20 death tests in total. `server.smoke` and `editor.smoke` are only registered when their targets exist:
+There are 24 death tests in Debug and Development: 20 `DG_ASSERT` death tests in the allocator, fixed-point and sim
+suites, plus the four `AsyncLogDeath` tests. `AsyncLogDeath.ForkedChildLogsSynchronouslyAndExitsCleanly` checks an exit
+code rather than an assert, so it also runs in Release. The two fork tests are POSIX-only, so on Windows
+`AsyncLogDeath` has two tests in Debug and none in Release. `server.smoke` and `editor.smoke` are only registered when their targets exist:
 the editor is not built for headless or mobile presets, and the server is not built for Android or iOS.
 
 ### Golden hashes
@@ -165,15 +168,18 @@ hashes agree, check that a different seed or input changes the hash, and compare
 ### Write a death test
 
 A **death test** checks that a `DG_ASSERT` fires for a programmer error. `DG_ASSERT` calls `std::abort` after logging
-`Assertion failed: <expression> — <message> (...)`, and is compiled out in Release. Follow these conventions, which
-every existing death test uses:
+`Assertion failed: <expression> — <message> (...)` to stderr, and is compiled out in Release. The logger drains its
+asynchronous queue before the abort, so the message always reaches the death test's stderr matcher. Follow these
+conventions, which every `DG_ASSERT` death test uses:
 
 * Wrap death tests in `#if DG_ASSERTS_ENABLED`. Where Release has defined fallback behaviour, test it under
   `#if !DG_ASSERTS_ENABLED` (see `UncheckedAllocators` in [MemoryTest.cpp](tests/core/MemoryTest.cpp)).
 * Put them in a suite named after the type plus `Death` (`PoolAllocatorDeath`, `FixedDeath`), so that
   `ctest -R Death` or `--gtest_filter='*Death.*'` selects all of them.
 * Start each test with `GTEST_FLAG_SET(death_test_style, "threadsafe");`. The statement then runs in a freshly
-  re-executed child process, so allocations it makes before dying never reach the parent.
+  re-executed child process, so allocations it makes before dying never reach the parent. The only exceptions are the
+  two `AsyncLogDeath.ForkedChild...` tests in [LogTest.cpp](tests/core/LogTest.cpp), which use the `fast` style on
+  purpose because they test what happens to the logger in a child forked without re-executing.
 * Match the specific assert text, not just any crash, so the test only passes when the intended contract fired.
 * Put multi-statement misuse in a lambda. `EXPECT_DEATH` is a macro, and commas in the statement would split its
   arguments.

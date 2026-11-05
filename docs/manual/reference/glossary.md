@@ -22,7 +22,7 @@ decision and its reasons. A decision that changes the design also updates `docs/
 ### AppConfig
 
 `dg::runtime::AppConfig`, the struct that holds an app's settings (name, headless, fast, tick count, tick rate,
-players, seed, level). An app's `main()` passes its defaults, and command-line flags override them. See
+players, seed, level, log level, log file). An app's `main()` passes its defaults, and command-line flags override them. See
 [Runtime and apps](../systems/runtime-and-apps.md#reference).
 
 ### Archetype
@@ -51,6 +51,12 @@ Enable it with `-D DG_ENABLE_ASAN=ON`; CI runs the Debug suite under ASan and UB
 
 `AssetHandle<T>`, the planned reference-counted handle through which serialized data and runtime code refer to an
 asset by GUID, never by path. See [Assets, cooking and packaging](../planned/assets-and-packaging.md#asset-database).
+
+### Async logging
+
+Logging in which the calling thread only formats the message and puts it in a queue, and a background worker thread
+writes it to the sinks. `dg::log` works this way on top of spdlog, with one worker. `Error` and `Fatal` messages are
+the exception: the caller waits until they are written. See [Core foundation](../systems/core-foundation.md#logging).
 
 ### Authoritative sim
 
@@ -172,7 +178,8 @@ for mobile and lower-end hardware. See [Rendering](../planned/rendering.md#globa
 ### Death test
 
 A GoogleTest case that checks that a `DG_ASSERT` fires for a programmer error by running the statement in a child
-process and matching the `Assertion failed` message. Death tests exist only when asserts are enabled. See
+process and matching the `Assertion failed` message. Assert death tests exist only when asserts are enabled. The
+`AsyncLogDeath` suite also uses death and exit tests to check what the logger writes before a process dies. See
 [Testing](../tooling/testing.md#write-a-death-test).
 
 ### Debug
@@ -356,7 +363,8 @@ destroy sequence and maximizes the time before a slot is reused, so stale handle
 
 ### Final state-hash line
 
-The last line every app prints, `[info] final tick=<n> state-hash=0x<hex> elapsed=<s>s`. `dg determinism` and CI parse
+The last line every app prints, `[<time>] [info] final tick=<n> state-hash=0x<hex> elapsed=<s>s` (without the
+`[<time>] [info]` prefix when `--log-level` filters out `Info`). `dg determinism` and CI parse
 it, so its format is a stable interface. See
 [Runtime and apps](../systems/runtime-and-apps.md#the-final-state-hash-line).
 
@@ -380,6 +388,13 @@ platform-independent. Detergine provides `fixed32` (Q16.16) and `fixed64` (Q32.3
 
 `dg::fixed64`, a Q32.32 fixed-point number (`Fixed<i64, 32>`) with range [-2^31, 2^31) and resolution 2^-32. Use it
 for values that can grow, such as scores and currency. See [Fixed-point numbers](../systems/fixed-point.md).
+
+### Flush fence
+
+The last sink of the engine logger, which makes `dg::log::flush()` blocking. spdlog's own asynchronous flush only
+posts a request. The fence counts the flush requests the worker has completed, and `flush()` waits until its own
+ticket is done, which means every earlier message has been written and every sink flushed. See
+[Core foundation](../systems/core-foundation.md#how-the-logger-works).
 
 ### FMA contraction
 
@@ -586,6 +601,13 @@ A multiplayer model in which peers exchange only inputs and every peer advances 
 step. It works only if the sim is bit-identical everywhere, which is why determinism is the engine's core guarantee. See
 [Determinism model](../architecture/determinism.md#overview).
 
+### Log level
+
+The severity of a log message (`Trace`, `Debug`, `Info`, `Warn`, `Error`, `Fatal`), and the threshold below which
+messages are discarded before they are formatted (`Off` disables everything except assertion failures). Set it with
+`dg::log::setLevel()`, `Config::level` or the `--log-level` flag. See
+[Core foundation](../systems/core-foundation.md#log-levels-and-filtering).
+
 ### LTO
 
 Link-time optimization (interprocedural optimization, IPO): optimization across translation units at link time. The
@@ -641,6 +663,13 @@ The CMake generator used by the Ninja presets. One build tree holds Debug, Devel
 A violation risk of C++'s one-definition rule: the same inline function compiled differently in two translation units,
 where the linker keeps only one copy. Detergine applies the strict FP flags to every target so an FMA-contracted copy
 can never end up in sim code. See [Determinism model](../architecture/determinism.md#strict-floating-point-on-every-target).
+
+### Overflow policy
+
+What an asynchronous logger does when its queue is full. In `dg::log` the default (`blockWhenFull = true`) makes the
+caller wait, so nothing is lost. With `blockWhenFull = false`, `Trace`..`Warn` messages that find the queue full are
+dropped, while `Error`, `Fatal` and flush requests always wait. spdlog's `overrun_oldest` policy is never used. See
+[Core foundation](../systems/core-foundation.md#queue-policies).
 
 ### Overlay triplet
 
@@ -880,6 +909,12 @@ is part of the determinism manifest. See
 
 A planned budget manager, shared by VFX and animation, that ranks instances by distance, screen size and priority and
 lowers the update rate or LOD of the less significant ones. See [Particles and VFX](../planned/vfx.md).
+
+### Sink
+
+A destination that a logger writes formatted lines to. The engine logger has a console sink (stdout below `Warn`,
+stderr from `Warn` up), an optional file sink, a logcat sink on Android, and the internal flush fence. See
+[Core foundation](../systems/core-foundation.md#sinks-and-line-formats).
 
 ### Slang
 

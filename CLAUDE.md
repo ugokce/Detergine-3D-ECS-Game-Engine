@@ -53,7 +53,11 @@ Never add platform-specific code outside `engine/platform/` (or `#if` blocks in 
 CMake + Ninja + vcpkg (manifest) · SDL3 · Vulkan (volk, VMA, vk-bootstrap) · Slang shaders · Dear ImGui (docking) +
 ImGuizmo/ImPlot · Jolt Physics (cross-platform deterministic) · Box2D v3 · Luau · enkiTS · fastgltf · ufbx ·
 meshoptimizer · KTX2/Basis Universal · FreeType/HarfBuzz/msdf-atlas-gen · FidelityFX Parallel Sort · Yoga · miniaudio + Steam Audio + Opus · ozz-animation ·
-Recast/Detour · ENet / GameNetworkingSockets · rapidyaml · zstd/LZ4 · xxHash · Tracy · spdlog · GoogleTest.
+Recast/Detour · ENet / GameNetworkingSockets · rapidyaml · zstd/LZ4 · xxHash · Tracy · spdlog (async) · GoogleTest.
+
+**Logging:** always use `dg::log` (`dg/core/Log.h`: `trace/debug/info/warn/error/fatal`), never `printf`/`std::cout`
+or spdlog directly. It is an asynchronous spdlog logger; spdlog stays private to `engine/core/src/Log.cpp`. Apps call
+`runtime::startLogging` / `log::shutdown`. Sim code may log, but nothing logged may feed back into the simulation.
 
 Adding a new third-party dependency requires a permissive license (MIT/BSD/Zlib/Apache-2/PD), all-platform support,
 a vcpkg port (or vendored copy in `third_party/` with its LICENSE), and a line in DESIGN.md §2. **No GPL/LGPL in the engine.**

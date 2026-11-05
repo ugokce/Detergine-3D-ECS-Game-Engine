@@ -152,7 +152,7 @@ seed and player count, so you can check it by hand:
 
 ```bash
 ./dg run player -- --headless --fast --ticks 1800
-# [info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=...
+# [<time>] [info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=...
 ```
 
 The handle, detmath, vector and sim golden tests print their hash on every run, even when they pass, so you can compare runs from different machines. The fixed-point golden prints its digest only on failure.

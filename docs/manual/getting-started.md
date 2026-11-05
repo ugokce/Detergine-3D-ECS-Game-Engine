@@ -43,7 +43,8 @@ The rest of this page explains each step. The full command reference is on [The 
 | Linux x64 | Clang 19 or newer (older Clang cannot use libstdc++'s `std::expected`), Ninja and `pkg-config` (`sudo apt install ninja-build pkg-config`). Linux is mainly a headless-server and CI host: the editor host builds there, but Linux is a best-effort editor platform and has no IDE project generator. |
 
 The engine has no other system dependencies today. Third-party libraries come from vcpkg; the manifest
-`vcpkg.json` currently lists only `gtest` (GoogleTest).
+`vcpkg.json` currently lists `gtest` (GoogleTest) and `spdlog` (the engine logger, built on `std::format` without the
+fmt library).
 
 ## Set up the toolchain
 
@@ -70,9 +71,9 @@ does. Every machine and CI runner therefore resolves the same package versions.
 1. The `VCPKG_ROOT` environment variable, if it points at a vcpkg checkout.
 2. `external/vcpkg` inside the repository.
 
-If you already use vcpkg elsewhere, set `VCPKG_ROOT` and skip `--vcpkg`. Without vcpkg, configuring fails while
-`DG_BUILD_TESTS` is `ON`, because GoogleTest comes from vcpkg. With `-D DG_BUILD_TESTS=OFF` the engine configures and
-builds without vcpkg.
+If you already use vcpkg elsewhere, set `VCPKG_ROOT` and skip `--vcpkg`. vcpkg is required: without it, configuring
+fails because the engine logger needs spdlog (and the tests need GoogleTest), both from vcpkg. Turning tests off with
+`-D DG_BUILD_TESTS=OFF` does not avoid it.
 
 > **Tip:** After bootstrapping vcpkg into an existing build tree, reconfigure with `./dg generate` (or add `--fresh`
 > to any command) so CMake picks up the vcpkg toolchain.
@@ -164,15 +165,20 @@ All three share one command line ([Application.h](engine/runtime/include/dg/runt
 | `--players <n>` | `2` | Number of scripted player slots, at least 1. |
 | `--seed <n>` | `24301` (`0x5eed`) | Simulation seed, as a decimal number. |
 | `--level <name>` | none | Level to load. Accepted but ignored with a warning until level loading exists. |
+| `--log-level <name>` | `info` | Log threshold: `trace`, `debug`, `info`, `warn`, `error`, `fatal` or `off`. |
+| `--log-file <path>` | none | Also write the log to this file (truncated at start). |
 | `--version` | | Print the version, configuration, platform, architecture and compiler, then exit. |
 | `--help`, `-h` | | Print the usage, then exit. |
 
-An invalid argument prints an error and exits with code 2. In real-time mode the app logs the state hash every five
+An invalid argument, or a `--log-file` that cannot be opened, prints an error and exits with code 2. In real-time mode the app logs the state hash every five
 seconds of simulated time. Every run ends with a line like this:
 
 ```text
-[info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=0.002s
+[18:14:35.423] [info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=0.003s
 ```
+
+Each log line starts with the local time and the level. With `--log-level warn` or higher, the final line is
+printed without that prefix, so the hash is always on stdout.
 
 That is the state hash of the simulation after 1800 ticks with the default seed and two players. It must be the same
 on every machine and in every configuration. See [Runtime and apps](systems/runtime-and-apps.md) for how the apps work.
@@ -268,7 +274,7 @@ not. If a change really needs no documentation, add a `Docs: none (<reason>)` li
 |---|---|
 | `CMake not found on PATH (3.28+ required)` | Install CMake 3.28 or newer and make sure it is on `PATH`. |
 | `macOS builds target Apple Silicon (arm64) only` | The engine does not support Intel Macs. |
-| CMake cannot find `GTest` when configuring | Run `./dg setup --vcpkg`, then `./dg generate --fresh`. |
+| CMake cannot find `GTest` or `spdlog` when configuring | Run `./dg setup --vcpkg`, then `./dg generate --fresh`. |
 | `Visual Studio 2022 with C++ tools not found (needed for clang-cl)` | Install Visual Studio with the C++ and Clang tools components, or use `./dg generate --ide`. |
 | `no IDE generator for Linux` | Expected: use the `linux-x64` preset with your editor's CMake support. |
 | `the launcher needs tkinter` | Install tkinter as described above. |

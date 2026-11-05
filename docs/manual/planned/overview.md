@@ -104,8 +104,9 @@ Every planned system builds on the foundation that exists today:
 | The `DG_HEADLESS` option ([DgOptions.cmake](cmake/DgOptions.cmake)) | The headless build profile that excludes presentation modules |
 
 The modules that exist today are `core`, `math`, `sim` and `runtime` (see [engine/CMakeLists.txt](engine/CMakeLists.txt)).
-New modules are added there in dependency order, and the only third-party dependency in
-[vcpkg.json](https://github.com/ugokce/Detergine-3D-ECS-Game-Engine/blob/main/vcpkg.json) today is `gtest`.
+New modules are added there in dependency order, and the only third-party dependencies in
+[vcpkg.json](https://github.com/ugokce/Detergine-3D-ECS-Game-Engine/blob/main/vcpkg.json) today are `gtest` and
+`spdlog`.
 
 When you start one of these systems, read its DESIGN.md section first, add the module in its own folder under
 `engine/`, and change the page status from `design` to `partial` or `implemented`. A page with that status must
@@ -124,7 +125,7 @@ phases are in
 |---|---|---|
 | 0 | Build system | done |
 | 1 | Core foundation | done (macOS ARM64) |
-| 2 | Dependencies and CI (spdlog sinks, Tracy, xxHash still to do) | in progress |
+| 2 | Dependencies and CI (Tracy and xxHash still to do) | in progress |
 | 3 | Reflection | not started |
 | 4 | Serialization | not started |
 | 5 | ECS | not started |

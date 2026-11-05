@@ -3,15 +3,17 @@ title: Runtime and apps (dg-editor, dg-player, dg-server)
 section: Systems
 order: 80
 status: partial
-summary: The dg::runtime application host (shared command line, fixed-tick main loop, shutdown) and the three executables built on it.
+summary: The dg::runtime application host (shared command line, logging start-up, fixed-tick main loop, shutdown) and the three executables built on it.
 sources: engine/runtime/, apps/
 ---
 
 ## Overview
 
-`dg::runtime` is the application host. It parses the shared engine command line, runs the fixed-tick main loop over
-the [simulation](simulation.md), handles Ctrl+C and `SIGTERM`, and prints a machine-readable final state hash. The
-three executables in `apps/` are thin `main()` functions on top of it:
+`dg::runtime` is the application host. It parses the shared engine command line, starts the asynchronous
+[engine logger](core-foundation.md#logging) with the app's `--log-level` and `--log-file` settings, runs the
+fixed-tick main loop over the [simulation](simulation.md), handles Ctrl+C and `SIGTERM`, prints a machine-readable
+final state hash, and drains the log before the process exits. The three executables in `apps/` are thin `main()`
+functions on top of it:
 
 | App | Source | Built when | Purpose today | Purpose when finished |
 |---|---|---|---|---|
@@ -48,11 +50,11 @@ can also start a binary directly from `build/<preset>/bin/<Config>/`:
 build/macos-arm64-xcode/bin/Debug/dg-player --headless --fast --ticks 1800
 ```
 
-Output on a Debug macOS build:
+Output on a Debug macOS build. Every log line starts with the local time and the level:
 
 ```text
-[info] dg-player 0.1.0 (Debug, macos-arm64, AppleClang) headless=true tick-rate=30Hz players=2
-[info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=0.002s
+[18:14:35.420] [info] dg-player 0.1.0 (Debug, macos-arm64, AppleClang) headless=true tick-rate=30Hz players=2
+[18:14:35.423] [info] final tick=1800 state-hash=0x9f504fe2ce4e5ee2 elapsed=0.003s
 ```
 
 ### Real-time and fast mode
@@ -78,6 +80,8 @@ All three apps accept the same flags, defined in [Application.cpp](engine/runtim
 | `--players <n>` | `u32`, at least 1 | `2` | Number of scripted player slots |
 | `--seed <n>` | `u64` | `24301` (`0x5eed`) | Simulation seed |
 | `--level <name>` | string | empty | Level to load. Not implemented: the app logs a warning and ignores it |
+| `--log-level <name>` | `trace`, `debug`, `info`, `warn` (or `warning`), `error`, `fatal`, `off` | `info` | Log threshold; see [Logging flags](#logging-flags) |
+| `--log-file <path>` | string | empty | Also write the log to this file, truncated at start |
 | `--version` | none | | Print build information and exit |
 | `--help`, `-h` | none | | Print the usage text and exit |
 
@@ -86,14 +90,44 @@ Numbers are parsed with `std::from_chars` in base 10. The whole value must be a 
 earlier one. `--help` and `--version` stop parsing as soon as they are reached.
 
 `--version` prints one line: `<app> <version> (<config>, <platform>-<arch>, <compiler>)`, with `, headless build`
-appended for `DG_HEADLESS` builds, for example `dg-player 0.1.0 (Debug, macos-arm64, AppleClang)`.
+appended for `DG_HEADLESS` builds, for example `dg-player 0.1.0 (Debug, macos-arm64, AppleClang)`. `--help` and
+`--version` print straight to stdout, not through the logger, so their output has no timestamp or level.
+
+### Logging flags
+
+`--log-level` sets the threshold of the [engine logger](core-foundation.md#log-levels-and-filtering). Level names are
+case-sensitive: `--log-level INFO` is rejected with exit code 2. At `off` nothing is logged except an assertion
+failure. `--log-file <path>` adds a file sink next to the console. The file is truncated at start, and its lines also
+carry the date and the id of the logging thread:
+
+```bash
+build/macos-arm64-xcode/bin/Debug/dg-player --fast --ticks 1800 --log-level debug --log-file player.log
+```
+
+```text
+[2026-11-05 18:14:35.456] [info] [thread 848302] dg-player 0.1.0 (Debug, macos-arm64, AppleClang) headless=false tick-rate=30Hz players=2
+```
+
+If the file cannot be opened, the app logs `[<time>] [error] cannot open log file '<path>': <reason>` and exits with
+code 2 before the loop starts. The message is written with `log::writeUnfiltered()`, so it appears even with
+`--log-level fatal` or `off`.
+
+The order of events in `runMain()` (and in the `dg-editor` `main()`) is:
+
+1. `parseCommandLine()`. A parse error is logged with `log::error` and the app returns 2. The logger is not configured
+   yet at this point, so the message uses the logger's lazy default (console, `info`), whatever `--log-level` says.
+2. `startLogging(config)`, which calls `log::init()` with `config.logLevel` and `config.logFile`. On failure the app
+   calls `log::shutdown()` and returns 2.
+3. `run(config)`.
+4. `log::shutdown()`, which drains the queue and joins the logger's worker thread before `main()` returns. The
+   logger's own `atexit` hook is only a safety net.
 
 ### Exit codes
 
 | Code | When |
 |---|---|
 | `0` | The loop finished (`--ticks` reached, or Ctrl+C or `SIGTERM`), or `--help` / `--version` was printed |
-| `2` | Invalid command line: unknown argument, missing value, malformed number, `--tick-rate` outside 1 to 1000, or `--players 0`. The message goes to stderr as `[error] <app>: <message>` |
+| `2` | Invalid command line: unknown argument, missing value, malformed number, unknown `--log-level`, `--tick-rate` outside 1 to 1000, or `--players 0`. The message goes to stderr as `[<time>] [error] <app>: <message>`. Also returned when the `--log-file` cannot be opened |
 
 A stop signal is not an error: the loop finishes the current tick, prints the final line and returns 0. The handler
 only sets a flag that the loop checks before each tick. In real-time mode a signal that arrives while the loop is
@@ -107,16 +141,23 @@ from interrupted runs. Use `--ticks` for runs whose hashes you compare.
 
 ### The final state-hash line
 
-Every run ends with exactly one line on stdout:
+Every run ends with exactly one line on stdout. Normally it is an `Info` log line:
 
 ```text
-[info] final tick=<n> state-hash=0x<16 hex digits> elapsed=<seconds>s
+[<HH:MM:SS.mmm>] [info] final tick=<n> state-hash=0x<16 hex digits> elapsed=<seconds>s
+```
+
+With `--log-level warn`, `error`, `fatal` or `off`, where `Info` is filtered out, `run()` calls `log::flush()` and then
+writes the same line without the time and level prefix straight to stdout, so the hash is printed at every log level:
+
+```text
+final tick=<n> state-hash=0x<16 hex digits> elapsed=<seconds>s
 ```
 
 `tick` is the number of ticks stepped, `state-hash` is `Simulation::stateHash()` in lowercase hex, and `elapsed` is
 wall-clock seconds with three decimals. `dg determinism` reads `state-hash=(0x[0-9a-f]+)` from this line to compare
-Debug and Release builds, so treat the format as an interface: do not change it without updating
-[dg.py](tools/dg.py).
+Debug and Release builds with a regular-expression search, so the prefix does not matter but the
+`final tick=... state-hash=0x...` part is an interface: do not change it without updating [dg.py](tools/dg.py).
 
 ### Write your own host
 
@@ -131,7 +172,8 @@ int main(int argc, char** argv) {
 }
 ```
 
-When you need a step between parsing and running, as `dg-editor` does, call `parseCommandLine()` and `run()` yourself:
+When you need a step between parsing and running, as `dg-editor` does, call `parseCommandLine()`, `startLogging()`,
+`run()` and `log::shutdown()` yourself, in that order:
 
 ```cpp
 #include "dg/core/Log.h"
@@ -150,7 +192,13 @@ int main(int argc, char** argv) {
     if (config.maxTicks == 0) {
         config.maxTicks = 300;
     }
-    return dg::runtime::run(config);
+    if (!dg::runtime::startLogging(config)) {
+        dg::log::shutdown();
+        return 2; // --log-file could not be opened; the reason has been logged
+    }
+    const int exitCode = dg::runtime::run(config);
+    dg::log::shutdown(); // drain the log before main returns
+    return exitCode;
 }
 ```
 
@@ -161,8 +209,8 @@ Add the executable in [apps/CMakeLists.txt](apps/CMakeLists.txt) with
 
 | File | Contents |
 |---|---|
-| [Application.h](engine/runtime/include/dg/runtime/Application.h) | `AppConfig`, `ParseOutcome`, `parseCommandLine()`, `run()`, `runMain()` |
-| [Application.cpp](engine/runtime/src/Application.cpp) | Flag parsing, usage text, build-info line, signal handling, the main loop |
+| [Application.h](engine/runtime/include/dg/runtime/Application.h) | `AppConfig`, `ParseOutcome`, `parseCommandLine()`, `startLogging()`, `run()`, `runMain()` |
+| [Application.cpp](engine/runtime/src/Application.cpp) | Flag parsing, usage text, build-info line, logging start-up, signal handling, the main loop, the final line |
 | [engine/runtime/CMakeLists.txt](engine/runtime/CMakeLists.txt) | `dg_add_module(runtime ...)`, public deps `dg::core` and `dg::sim` |
 | [apps/CMakeLists.txt](apps/CMakeLists.txt) | The three `dg_add_app()` targets and their build conditions |
 | [apps/](apps/) | One `Main.cpp` per app |
@@ -173,7 +221,12 @@ Add the executable in [apps/CMakeLists.txt](apps/CMakeLists.txt) with
   sim nothing except `InputCommand`s, and wall-clock time must never reach `Simulation::step()`.
 * **`dg-server` is always headless.** Its default is `headless = true`, and no flag turns presentation on. Keep it that
   way when presentation modules arrive: the server must link no renderer, audio or UI code.
-* **The final line format is stable.** `dg determinism` and CI parse it.
+* **The final line format is stable.** `dg determinism` and CI parse it, and it must reach stdout at every
+  `--log-level`.
+* **Logging is started after parsing and shut down before `main()` returns.** Every app's `main()` (through
+  `runMain()` or by hand, as in `dg-editor`) calls `startLogging()` before `run()` and `log::shutdown()` after it, and
+  exits with code 2 when `startLogging()` fails. Use `dg::log` for app output; only `--help`, `--version` and the
+  bare final line write to stdout directly.
 * **Apps stay thin.** Behaviour shared by all apps belongs in `dg::runtime`, not in a `Main.cpp`.
 
 ### Add a command-line flag
@@ -207,6 +260,8 @@ to the sim itself is covered in [Simulation](simulation.md#how-to-edit).
 | `players` | `u32` | `2` | `--players` |
 | `seed` | `u64` | `0x5eed` | `--seed` |
 | `level` | `std::string` | empty | `--level` |
+| `logLevel` | `log::Level` | `log::Level::Info` | `--log-level` |
+| `logFile` | `std::string` | empty (no file) | `--log-file` |
 
 `run()` builds the simulation from `tickRate` and `seed` only, so the placeholder body count is always the
 `SimConfig` default of 64.
@@ -216,8 +271,9 @@ to the sim itself is covered in [Simulation](simulation.md#how-to-edit).
 | Function | Description |
 |---|---|
 | `std::expected<ParseOutcome, std::string> parseCommandLine(int argc, char** argv, AppConfig& config)` | Applies the flags to `config`. Returns `ParseOutcome::Run`, `ParseOutcome::ExitSuccess` (after `--help` or `--version`), or an error message |
+| `std::expected<void, std::string> startLogging(const AppConfig& config)` | `log::init({.level = config.logLevel, .filePath = config.logFile})`. Returns the error (already logged) when the log file cannot be opened |
 | `int run(const AppConfig& config)` | Logs the configuration, installs `SIGINT`/`SIGTERM` handlers, runs the loop, prints the final line, returns 0 |
-| `int runMain(int argc, char** argv, AppConfig defaults)` | `parseCommandLine()` then `run()`. Returns 2 on a parse error and 0 on `ExitSuccess` |
+| `int runMain(int argc, char** argv, AppConfig defaults)` | `parseCommandLine()`, `startLogging()`, `run()`, then `log::shutdown()`. Returns 2 on a parse error or a `startLogging()` failure, 0 on `ExitSuccess`, otherwise the result of `run()` |
 
 ### App defaults
 
@@ -225,7 +281,7 @@ to the sim itself is covered in [Simulation](simulation.md#how-to-edit).
 |---|---|---|
 | `dg-player` | `{.appName = "dg-player"}` | None |
 | `dg-server` | `{.appName = "dg-server", .headless = true}` | None |
-| `dg-editor` | `{.appName = "dg-editor"}` | Logs `dg-editor: the editor UI is not implemented yet; running the engine loop (Ctrl+C to quit)` before `run()` |
+| `dg-editor` | `{.appName = "dg-editor"}` | Its own `main()`: after `startLogging()` it logs `dg-editor: the editor UI is not implemented yet; running the engine loop (Ctrl+C to quit)`, then calls `run()` and `log::shutdown()` |
 
 ## Testing
 
@@ -245,5 +301,7 @@ runs 120 ticks in fast mode and must exit with code 0:
 
 `dg determinism` builds `dg-player` in Debug and Release, runs `--headless --fast --ticks 1800` (change the count with
 `--ticks`), and fails with `DESYNC` when the two final hashes differ. CI runs it on every host after the test suites.
-There are no unit tests for `parseCommandLine()` yet; check flag changes by hand with `--help` and a few invalid
-values. See [Testing](../tooling/testing.md) and [Continuous integration](../tooling/ci.md).
+There are no unit tests for `parseCommandLine()` or `startLogging()` yet; check flag changes by hand with `--help`
+and a few invalid values. For the logging flags, check that `--log-level warn` still prints the bare final line, that
+`--log-file /nonexistent_dir/a.log` exits with code 2, and that `--log-file <path>` writes the file. The logger itself
+is covered by the `AsyncLog` tests in `dg-core-tests` (see [Core foundation](core-foundation.md#testing)). See [Testing](../tooling/testing.md) and [Continuous integration](../tooling/ci.md).

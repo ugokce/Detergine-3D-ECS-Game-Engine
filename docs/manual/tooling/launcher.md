@@ -122,9 +122,11 @@ Clean, Build Docs, Open Docs and Check Docs are disabled and Stop is enabled. Op
 The console shows each command as `$ ./dg ...` (`dg ...` on Windows) followed by its output, coloured by line:
 the rules are checked in this order, and the first match wins:
 
-1. Red: the line starts with `[dg] error` or contains `error:`, `failed` or `desync` (case-insensitive). This includes
-   CTest's success summary `100% tests passed, 0 tests failed out of N`, because it contains `failed`.
-2. Yellow: the line contains `warning` or starts with `[warn]`.
+1. Red: an engine log line at level `error` or `fatal` (`[HH:MM:SS.mmm] [error] ...`, or `[error] ...` from the
+   synchronous fallback), a line starting with `[dg] error`, or a line containing `error:`, `(Failed)`,
+   `N tests failed` with N > 0, `failed with`, `failed:` or `desync` (case-insensitive). CTest's success summary
+   `100% tests passed, 0 tests failed out of N` is not red.
+2. Yellow: an engine log line at level `warn`, or a line containing `warning`.
 3. Cyan: the line starts with `[dg]` or `$ ` (commands). This includes `dg determinism`'s success line
    `[dg] Debug and Release are bit-identical ...`.
 4. Green: any other line containing `passed` or `bit-identical`.
