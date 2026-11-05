@@ -320,7 +320,8 @@ class Launcher(tk.Tk):
         args = [a for a in self.common_args()]
         name = self.preset["name"]
         if "Ninja" in self.preset["generator"]:  # open the matching IDE preset instead
-            ide = {"macos-arm64": "macos-arm64-xcode", "windows-x64": "windows-x64-vs2022"}.get(name)
+            ide = {"macos-arm64": "macos-arm64-xcode",
+                   "windows-x64": f"windows-x64-vs{dg.vs_product_line() or '2022'}"}.get(name)
             if not ide:
                 self.append("[dg] error: no IDE generator for this preset\n", "error")
                 return

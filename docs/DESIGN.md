@@ -1447,7 +1447,8 @@ shown and copyable**, so the GUI never diverges from the CLI. Settings persist p
 `Launcher.command` (macOS) and `Launcher.bat` (Windows) open it with a double-click.
 
 * **Presets**: `macos-arm64` (Ninja), `macos-arm64-xcode`, `windows-x64` (Ninja + clang-cl; `dg` loads the VS developer
-  environment automatically), `windows-x64-vs2022`, `linux-x64`, `linux-x64-server` (headless profile), `android-arm64`
+  environment automatically, for any Visual Studio version), `windows-x64-vs2022`, `windows-x64-vs2026` (`dg generate --ide`
+  picks the installed one), `linux-x64` (Clang 19+), `linux-x64-server` (headless profile), `android-arm64`
   (NDK via `ANDROID_NDK_HOME`). Each has `-debug`, `-dev`, and `-release` build and test presets for IDE integrations
   (VS Code CMake Tools, CLion, Visual Studio).
 * All presets use **multi-config generators**, so one build tree holds Debug, Development, and Release. Switching

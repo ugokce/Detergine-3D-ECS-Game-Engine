@@ -91,7 +91,9 @@ def default_preset(ide: bool = False) -> str:
     if host == "macos":
         return "macos-arm64-xcode" if ide or not have("ninja") else "macos-arm64"
     if host == "windows":
-        return "windows-x64-vs2022" if ide or not (have("ninja") and find_vs() is not None) else "windows-x64"
+        if ide or not (have("ninja") and find_vs() is not None):
+            return f"windows-x64-vs{vs_product_line() or '2022'}"
+        return "windows-x64"
     if ide:
         fail("no IDE generator for Linux; use the default Ninja preset with your editor's CMake support")
     return "linux-x64"
@@ -104,6 +106,8 @@ def preset_dir(preset: str) -> Path:
 def existing_preset() -> str | None:
     """Prefer a build tree that already exists for this host, so `dg build` after `dg generate --ide` reuses it."""
     candidates = [default_preset(), default_preset(ide=True)] if host_key() != "linux" else [default_preset()]
+    if host_key() == "windows":
+        candidates += ["windows-x64-vs2022", "windows-x64-vs2026"]
     for name in candidates:
         if (preset_dir(name) / "CMakeCache.txt").exists():
             return name
@@ -143,6 +147,19 @@ def find_vs() -> Path | None:
                          capture_output=True, text=True)
     path = out.stdout.strip()
     return Path(path) if path else None
+
+
+def vs_product_line() -> str | None:
+    """'2022' or '2026' for the newest Visual Studio with C++ tools, matching the windows-x64-vs<year> presets."""
+    vswhere = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / \
+        "Microsoft Visual Studio/Installer/vswhere.exe"
+    if not vswhere.exists():
+        return None
+    out = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
+                          "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property",
+                          "catalog_productLineVersion"], capture_output=True, text=True)
+    line = out.stdout.strip()
+    return line if line in ("2022", "2026") else None
 
 
 def build_env(preset: str) -> dict[str, str]:

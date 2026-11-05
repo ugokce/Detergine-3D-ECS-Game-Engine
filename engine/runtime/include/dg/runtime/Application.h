@@ -16,7 +16,7 @@ struct AppConfig {
     u32 tickRate = 30;
     u32 players = 2;
     u64 seed = 0x5eedu;
-    std::string level;    // level to load (headless servers are level-scoped, DESIGN.md §15.1)
+    std::string level{};  // level to load (headless servers are level-scoped, DESIGN.md §15.1)
 };
 
 enum class ParseOutcome { Run, ExitSuccess };

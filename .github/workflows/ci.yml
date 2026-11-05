@@ -26,9 +26,10 @@ jobs:
           - name: macOS ARM64
             os: macos-15
             preset: macos-arm64
+          # Ninja + clang-cl: `dg` loads whichever Visual Studio the image ships (currently VS 2026) through vswhere.
           - name: Windows x64
             os: windows-2025
-            preset: windows-x64-vs2022
+            preset: windows-x64
           - name: Linux x64
             os: ubuntu-24.04
             preset: linux-x64
@@ -43,9 +44,17 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install ninja pkgconf
 
+      # Clang 19+ is required on Linux: older Clang cannot use libstdc++'s std::expected.
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ninja-build clang pkg-config
+        run: ./.github/scripts/install-linux-tools.sh
+
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          pip install ninja
+          if ! command -v clang-cl >/dev/null; then echo "C:/Program Files/LLVM/bin" >> "$GITHUB_PATH"; fi
 
       - name: Restore vcpkg binary cache
         uses: actions/cache@v4
@@ -82,7 +91,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build clang pkg-config
+      - run: ./.github/scripts/install-linux-tools.sh
       - uses: actions/cache@v4
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}

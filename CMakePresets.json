@@ -106,6 +106,20 @@
       }
     },
     {
+      "name": "windows-x64-vs2026",
+      "displayName": "Windows x64 (Visual Studio 2026 + ClangCL)",
+      "inherits": [
+        "base",
+        "host-windows"
+      ],
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "toolset": "ClangCL",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md"
+      }
+    },
+    {
       "name": "linux-x64",
       "displayName": "Linux x64 (Ninja + Clang)",
       "inherits": [
@@ -243,6 +257,21 @@
     {
       "name": "android-arm64-release",
       "configurePreset": "android-arm64",
+      "configuration": "Release"
+    },
+    {
+      "name": "windows-x64-vs2026-debug",
+      "configurePreset": "windows-x64-vs2026",
+      "configuration": "Debug"
+    },
+    {
+      "name": "windows-x64-vs2026-dev",
+      "configurePreset": "windows-x64-vs2026",
+      "configuration": "Development"
+    },
+    {
+      "name": "windows-x64-vs2026-release",
+      "configurePreset": "windows-x64-vs2026",
       "configuration": "Release"
     }
   ],
@@ -386,6 +415,30 @@
     {
       "name": "linux-x64-server-release",
       "configurePreset": "linux-x64-server",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x64-vs2026-debug",
+      "configurePreset": "windows-x64-vs2026",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x64-vs2026-dev",
+      "configurePreset": "windows-x64-vs2026",
+      "configuration": "Development",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "windows-x64-vs2026-release",
+      "configurePreset": "windows-x64-vs2026",
       "configuration": "Release",
       "output": {
         "outputOnFailure": true
